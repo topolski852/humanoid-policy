@@ -1,0 +1,15 @@
+# Python
+.DS_Store
+**/*.egg-info/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pb
+
+# Onshape-to-robot
+**/assets/*
+
+# Omniverse USD
+**/usd/Props/
+**/usd/.asset_hash
+**/usd/config.yaml

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humanoid_policy"
+version = "0.1.0"
+description = "RL policy-training environments for the humanoid robot (Isaac Lab)"
+authors = [
+    { name = "topolski852" },
+]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["robotics", "isaaclab", "reinforcement-learning"]
+classifiers = [
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.11",
+    "Isaac Sim :: 5.1.0",
+]
+dependencies = [
+    "psutil",
+]
+
+[project.urls]
+repository = "https://github.com/topolski852/humanoid-policy"
+
+[tool.setuptools]
+packages = ["humanoid_policy"]
+zip-safe = false

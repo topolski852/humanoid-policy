@@ -1,0 +1,26 @@
+[project]
+name = "humanoid_policy_assets"
+version = "0.1.0"
+description = "Robot model / asset descriptions (USD, URDF, meshes) for humanoid-policy training"
+authors = [
+    { name = "topolski852" },
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = ["robotics", "isaaclab"]
+classifiers = [
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.10",
+]
+dependencies = []
+
+[project.urls]
+repository = "https://github.com/topolski852/humanoid-policy"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["humanoid_policy_assets"]

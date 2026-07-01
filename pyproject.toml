@@ -1,0 +1,120 @@
+[project]
+name = "humanoid-policy-workspace"
+version = "0.1.0"
+description = "Workspace for humanoid-policy RL training (stand-up + walk variants)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch==2.11.0",
+  "isaacsim[all,extscache]==6.0.0.1",
+  "isaacsim-core==6.0.0.1",
+  "isaaclab[isaacsim,all]==3.0.0b2",
+  "numpy",
+  "omegaconf",
+  "onnxruntime",
+  "pyaml",
+  "scipy",
+  "humanoid_policy",
+  "humanoid_policy_assets",
+]
+
+[build-system]
+requires = ["setuptools", "toml"]
+build-backend = "setuptools.build_meta"
+
+[tool.isort]
+atomic = true
+profile = "black"
+line_length = 120
+py_version = 312
+skip_glob = ["docs/*", "logs/*"]
+group_by_package = true
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "ISAACLABPARTY",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
+extra_standard_library = [
+    "numpy", "h5py", "torch", "tensordict", "matplotlib",
+    "gymnasium", "gym", "scipy", "yaml", "prettytable", "toml", "tqdm", "psutil",
+]
+known_thirdparty = [
+    "isaacsim.core.api", "omni.replicator.core", "pxr", "omni.kit.*", "warp", "carb", "Semantics",
+]
+known_isaaclabparty = [
+    "isaaclab", "isaaclab_tasks", "isaaclab_assets", "isaaclab_mimic", "isaaclab_rl",
+]
+known_firstparty = "humanoid_policy"
+known_local_folder = "config"
+
+[tool.pyright]
+exclude = ["**/__pycache__", "**/docs", "**/logs", ".git", ".vscode"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+enableTypeIgnoreComments = true
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+reportGeneralTypeIssues = "none"
+reportOptionalMemberAccess = "warning"
+reportPrivateUsage = "warning"
+
+[tool.setuptools]
+package-dir = {"" = "source"}
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+isaacsim = { index = "nvidia" }
+isaaclab = { index = "nvidia" }
+isaacsim-kernel = { index = "nvidia" }
+isaacsim-app = { index = "nvidia" }
+isaacsim-asset = { index = "nvidia" }
+isaacsim-benchmark = { index = "nvidia" }
+isaacsim-code-editor = { index = "nvidia" }
+isaacsim-core = { index = "nvidia" }
+isaacsim-cortex = { index = "nvidia" }
+isaacsim-example = { index = "nvidia" }
+isaacsim-gui = { index = "nvidia" }
+isaacsim-replicator = { index = "nvidia" }
+isaacsim-rl = { index = "nvidia" }
+isaacsim-robot = { index = "nvidia" }
+isaacsim-robot-motion = { index = "nvidia" }
+isaacsim-robot-setup = { index = "nvidia" }
+isaacsim-ros1 = { index = "nvidia" }
+isaacsim-ros2 = { index = "nvidia" }
+isaacsim-sensor = { index = "nvidia" }
+isaacsim-storage = { index = "nvidia" }
+isaacsim-template = { index = "nvidia" }
+isaacsim-test = { index = "nvidia" }
+isaacsim-utils = { index = "nvidia" }
+isaacsim-extscache-kit = { index = "nvidia" }
+isaacsim-extscache-kit-sdk = { index = "nvidia" }
+isaacsim-extscache-physics = { index = "nvidia" }
+humanoid_policy = { workspace = true }
+humanoid_policy_assets = { workspace = true }
+
+[tool.uv.extra-build-dependencies]
+flatdict = ["setuptools<81"]
+
+[tool.uv.workspace]
+members = [
+    "source/humanoid_policy",
+    "source/humanoid_policy_assets",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+explicit = true
