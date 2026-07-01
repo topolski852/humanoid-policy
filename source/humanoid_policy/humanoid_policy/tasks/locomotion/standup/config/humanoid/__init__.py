@@ -7,11 +7,11 @@ from . import env_cfg, agents
 ##
 
 gym.register(
-    id="Walk-Humanoid-Policy-v0",
+    id="Standup-Humanoid-Policy-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": env_cfg.BerkeleyHumanoidLiteEnvCfg,
-        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.BerkeleyHumanoidLitePPORunnerCfg,
+        "env_cfg_entry_point": env_cfg.BerkeleyHumanoidLiteStandupEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.BerkeleyHumanoidLiteStandupPPORunnerCfg,
     },
 )

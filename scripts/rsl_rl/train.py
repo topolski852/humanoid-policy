@@ -9,6 +9,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+import variants  # isort: skip
 
 
 # add argparse arguments
@@ -20,11 +21,15 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+# append training-variant argument (--variant resolves to a gym task id, overriding --task)
+variants.add_variant_arg(parser)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+# resolve --variant into args_cli.task before the hydra decorator reads it
+variants.resolve_variant(args_cli)
 
 # always enable cameras to record video
 if args_cli.video:

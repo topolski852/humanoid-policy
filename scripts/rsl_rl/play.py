@@ -8,6 +8,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+import variants  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -18,11 +19,15 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+# append training-variant argument (--variant resolves to a gym task id, overriding --task)
+variants.add_variant_arg(parser)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+# resolve --variant into args_cli.task
+variants.resolve_variant(args_cli)
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -126,17 +131,28 @@ def main():
     joint_kp = torch.zeros(num_joints, device=env.unwrapped.device)
     joint_kd = torch.zeros(num_joints, device=env.unwrapped.device)
     effort_limits = torch.zeros(num_joints, device=env.unwrapped.device)
-    
-    # extract the configurations from the actuator groups
-    for group in env_cfg.scene.robot.actuators.values():
-        # string util method expects a dict
-        match_expr_list = [expr for expr in group.joint_names_expr]
-        match_expr_dict = {expr: None for expr in match_expr_list}
 
-        indicies, _, _ = string_utils.resolve_matching_names_values(match_expr_dict, joint_names, preserve_order=True)
-        joint_kp[indicies] = group.stiffness
-        joint_kd[indicies] = group.damping
-        effort_limits[indicies] = group.effort_limit
+    def _assign_group_param(target, group, value, joint_names):
+        """Write an actuator-group param into ``target`` (indexed by joint), handling both a
+        scalar (applies to every joint the group matches) and a per-joint dict (contract gains)."""
+        if isinstance(value, dict):
+            # dict keys are joint-name expressions -> per-joint values
+            indices, _, values = string_utils.resolve_matching_names_values(
+                value, joint_names, preserve_order=True
+            )
+            target[indices] = torch.tensor(values, dtype=target.dtype, device=target.device)
+        else:
+            match_expr_dict = {expr: None for expr in group.joint_names_expr}
+            indices, _, _ = string_utils.resolve_matching_names_values(
+                match_expr_dict, joint_names, preserve_order=True
+            )
+            target[indices] = value
+
+    # extract the configurations from the actuator groups (scalar or per-joint dict gains)
+    for group in env_cfg.scene.robot.actuators.values():
+        _assign_group_param(joint_kp, group, group.stiffness, joint_names)
+        _assign_group_param(joint_kd, group, group.damping, joint_names)
+        _assign_group_param(effort_limits, group, group.effort_limit, joint_names)
 
     # extract the indices of the actuated joints
     match_expr_list = {expr: None for expr in env_cfg.actions.joint_pos.joint_names}
@@ -187,6 +203,78 @@ def main():
     if not os.path.exists("configs"):
         os.makedirs("configs")
     OmegaConf.save(deploy_config, "configs/policy_latest.yaml")
+
+    # === export a humanoid-control-compatible policy contract (legs-only) ===
+    # Mirrors humanoid-control/configs/leg_policy_params.json so the runtime can load
+    # joint_order / obs layout / default_pose / per-joint gains straight from the trainer.
+    # Only emitted for the 12-DoF legs policy (the current control target).
+    try:
+        if int(env.action_space.shape[-1]) == 12:
+            import json
+            from humanoid_policy_assets.robots.berkeley_humanoid_lite import HUMANOID_LITE_LEG_JOINTS
+
+            # per-joint position limits from the live articulation (sim order -> by name)
+            robot = env.unwrapped.scene["robot"]
+            sim_joint_names = list(robot.data.joint_names)
+            limits_t = getattr(robot.data, "joint_pos_limits", None)
+            if limits_t is None:
+                limits_t = robot.data.soft_joint_pos_limits
+            pos_limits = limits_t[0].detach().cpu().tolist()  # [n, 2] lower/upper
+            limit_by_name = {n: pos_limits[i] for i, n in enumerate(sim_joint_names)}
+
+            kp_by_name = {n: joint_kp[i].item() for i, n in enumerate(joint_names)}
+            kd_by_name = {n: joint_kd[i].item() for i, n in enumerate(joint_names)}
+            eff_by_name = {n: effort_limits[i].item() for i, n in enumerate(joint_names)}
+            default_by_name = {n: init_joint_pos[i] for i, n in enumerate(joint_names)}
+
+            # strip the sim "leg_" prefix to match humanoid-control joint names
+            def _contract_name(sim_name):
+                return sim_name[len("leg_"):] if sim_name.startswith("leg_") else sim_name
+
+            contract_joints = []
+            for idx, sim_name in enumerate(HUMANOID_LITE_LEG_JOINTS):
+                lo, hi = limit_by_name.get(sim_name, [None, None])
+                contract_joints.append({
+                    "index": idx,
+                    "joint_name": _contract_name(sim_name),
+                    "kp": kp_by_name.get(sim_name),
+                    "kd": kd_by_name.get(sim_name),
+                    "effort_limit": eff_by_name.get(sim_name),
+                    "position_limit_lower": lo,
+                    "position_limit_upper": hi,
+                    "default_pose": default_by_name.get(sim_name),
+                })
+
+            contract = {
+                "_meta": {
+                    "source": "humanoid-policy trainer export (scripts/rsl_rl/play.py)",
+                    "task": args_cli.task,
+                    "note": "Sim-side contract for humanoid-control; joint_order/obs/action match leg_policy_params.json.",
+                },
+                "canonical_joint_order": [_contract_name(n) for n in HUMANOID_LITE_LEG_JOINTS],
+                "control": {
+                    "policy_dt": float(env_cfg.sim.dt * env_cfg.decimation),
+                    "control_dt": 0.004,
+                    "action_scale": float(env_cfg.actions.joint_pos.scale),
+                },
+                "observation": {
+                    "num_observations": int(env.observation_space["policy"].shape[-1]),
+                    "layout": [
+                        "command(3)", "base_ang_vel(3)", "projected_gravity(3)",
+                        "joint_pos_minus_default(12)", "joint_vel(12)", "prev_action(12)",
+                    ],
+                },
+                "action": {
+                    "num_actions": int(env.action_space.shape[-1]),
+                    "formula": "target = clip(action)*action_scale + default_pose, then clamp to position limits",
+                },
+                "joints": contract_joints,
+            }
+            with open("configs/leg_policy_contract.json", "w") as f:
+                json.dump(contract, f, indent=2)
+            print("[INFO]: Wrote humanoid-control contract to configs/leg_policy_contract.json")
+    except Exception as exc:  # never let contract export break play
+        print(f"[WARN]: contract export skipped: {exc}")
 
     # reset environment
     obs = env.get_observations()

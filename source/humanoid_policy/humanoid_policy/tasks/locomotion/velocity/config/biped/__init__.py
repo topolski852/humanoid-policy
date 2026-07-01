@@ -7,7 +7,7 @@ from . import env_cfg, agents
 ##
 
 gym.register(
-    id="Velocity-Berkeley-Humanoid-Lite-Biped-v0",
+    id="Walk-Humanoid-Policy-Biped-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
