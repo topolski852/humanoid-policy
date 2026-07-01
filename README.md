@@ -20,12 +20,19 @@ Training type is selected with a `--variant` flag:
 | `standup-humanoid` | squat → stand | full body (22 DoF) | future |
 
 ```bash
-# train
-python scripts/rsl_rl/train.py --variant standup-biped --headless
+# train — full run (tuned 16k-env setup)
+python scripts/rsl_rl/train.py --variant standup-biped --profile full --headless
+
+# train — fast dev run (4k envs, sub-3h)
+python scripts/rsl_rl/train.py --variant standup-biped --profile fast --headless
 
 # play / export policy + deployment contract
 python scripts/rsl_rl/play.py --variant standup-biped
 ```
+
+`--profile` sets the training scale (`full` = 16384 envs, `fast` = 4096 envs targeted sub-3h);
+explicit `--num_envs` / `--max_iterations` override it. See `scripts/rsl_rl/profiles.py`
+(tune `FAST_MAX_ITERATIONS` to hit your wall-clock budget after checking the reported sec/iter).
 
 ## Sim ↔ real contract
 

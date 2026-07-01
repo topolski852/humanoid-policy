@@ -10,6 +10,7 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 import variants  # isort: skip
+import profiles  # isort: skip
 
 
 # add argparse arguments
@@ -23,6 +24,8 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 # append training-variant argument (--variant resolves to a gym task id, overriding --task)
 variants.add_variant_arg(parser)
+# append training-scale profile argument (--profile full|fast)
+profiles.add_profile_arg(parser)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -101,6 +104,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+    # apply the training-scale profile (full/fast); explicit --num_envs / --max_iterations win
+    profiles.apply_profile(agent_cfg, env_cfg, args_cli)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
