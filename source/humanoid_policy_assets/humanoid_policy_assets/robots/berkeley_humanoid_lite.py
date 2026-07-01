@@ -207,18 +207,24 @@ HUMANOID_LITE_CFG = ArticulationCfg(
 
 # Deep-squat starting pose (radians), sim joint names. From policy_starting_pose.json
 # "starting_pose_final" (per-pair L/R averaged, clamped to URDF limits; ankle_roll mirrored).
+#
+# knee_pitch and ankle_pitch are nudged ~0.01 rad (0.57°, within contract measurement noise)
+# OFF their exact URDF-limit values: the contract clamps them to the boundary, but Isaac Lab
+# rejects default joint positions that are not STRICTLY inside the joint limits. hip_pitch is
+# left exact (the training USD's limit for it is slightly wider than the contract's).
+_LIMIT_EPS = 0.01
 HUMANOID_LITE_SQUAT_POSE = {
     "leg_left_hip_roll_joint": 0.029593753814697265,
     "leg_left_hip_yaw_joint": 0.0038009449839591977,
     "leg_left_hip_pitch_joint": 0.9817477042468103,
-    "leg_left_knee_pitch_joint": 2.443460952792061,
-    "leg_left_ankle_pitch_joint": -0.7853981633974483,
+    "leg_left_knee_pitch_joint": 2.443460952792061 - _LIMIT_EPS,
+    "leg_left_ankle_pitch_joint": -0.7853981633974483 + _LIMIT_EPS,
     "leg_left_ankle_roll_joint": 0.013601303100585938,
     "leg_right_hip_roll_joint": 0.029593753814697265,
     "leg_right_hip_yaw_joint": 0.0038009449839591977,
     "leg_right_hip_pitch_joint": 0.9817477042468103,
-    "leg_right_knee_pitch_joint": 2.443460952792061,
-    "leg_right_ankle_pitch_joint": -0.7853981633974483,
+    "leg_right_knee_pitch_joint": 2.443460952792061 - _LIMIT_EPS,
+    "leg_right_ankle_pitch_joint": -0.7853981633974483 + _LIMIT_EPS,
     "leg_right_ankle_roll_joint": 0.013601303100585938,
 }
 
