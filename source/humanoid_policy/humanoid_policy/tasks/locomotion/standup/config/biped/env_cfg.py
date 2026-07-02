@@ -18,8 +18,11 @@ from humanoid_policy_assets.robots.berkeley_humanoid_lite import (
     HUMANOID_LITE_LEG_JOINTS,
 )
 
-# Nominal standing base height [m]. TODO: measure from a settled stand in sim and update.
-STANDING_BASE_HEIGHT = 0.55
+# Nominal standing base height [m]. The `base` link is the PELVIS (low, near the feet), not the
+# torso top: measured in sim the pelvis sits ~-0.03 m standing vs ~-0.24 m in the deep squat, so the
+# stand-up is a ~0.2 m pelvis rise. Target 0.0 (a few cm above the settled stand to encourage a full
+# rise). (An earlier 0.55 assumed base==torso-top and was unreachable.)
+STANDING_BASE_HEIGHT = 0.0
 
 
 @configclass

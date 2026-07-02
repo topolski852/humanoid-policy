@@ -10,7 +10,10 @@ profile. Independent of ``--variant`` (any variant can run at either scale).
   but is hardware/task dependent — watch the reported sec/iter on the first run and tune it here.
 """
 
-FAST_MAX_ITERATIONS = 2000
+# Quick-run iteration budget. 4096 envs x 24 steps x 6000 iters = 590M samples (~Berkeley legs
+# budget; enough for a usable dataset, whereas <500M under-trains). At the observed ~0.96 sec/iter
+# that is ~1.6 h wall time — comfortably under 3 h.
+FAST_MAX_ITERATIONS = 6000
 
 PROFILES = {
     "full": {

@@ -205,24 +205,30 @@ HUMANOID_LITE_CFG = ArticulationCfg(
 # THIS robot; if a more symmetric / generalizable policy is preferred, symmetrize these dicts.
 ##
 
-# Deep-squat starting pose (radians), sim joint names. From policy_starting_pose.json
+# Deep-squat starting pose (radians), sim joint names. Derived from policy_starting_pose.json
 # "starting_pose_final" (per-pair L/R averaged, clamped to URDF limits; ankle_roll mirrored).
 #
-# knee_pitch and ankle_pitch are nudged ~0.01 rad (0.57°, within contract measurement noise)
-# OFF their exact URDF-limit values: the contract clamps them to the boundary, but Isaac Lab
-# rejects default joint positions that are not STRICTLY inside the joint limits. hip_pitch is
-# left exact (the training USD's limit for it is slightly wider than the contract's).
+# IMPORTANT: hip_pitch is INVERTED between this sim/USD and the hardware. The contract/encoder reads
+# the squat hip at +0.982 (+56 deg, its upper limit), but in this USD that value drives the thigh the
+# WRONG way (feet fold up). The physical squat is reproduced in sim at the OPPOSITE limit, hip_pitch
+# ~= -1.898 (-108.75 deg). Verified in sim: with this pose + the base rot in the squat cfg it settles
+# stable, feet flat, ~14 deg forward torso tilt, matching the real robot. This inversion also affects
+# the sim<->real contract (walk included) and is an open reconciliation item.
+#
+# knee_pitch, ankle_pitch, and now hip_pitch are nudged ~0.01 rad (0.57 deg) OFF their exact
+# URDF-limit values because Isaac Lab rejects default joint positions that are not STRICTLY inside
+# the joint limits.
 _LIMIT_EPS = 0.01
 HUMANOID_LITE_SQUAT_POSE = {
     "leg_left_hip_roll_joint": 0.029593753814697265,
     "leg_left_hip_yaw_joint": 0.0038009449839591977,
-    "leg_left_hip_pitch_joint": 0.9817477042468103,
+    "leg_left_hip_pitch_joint": -1.8980527578749847 + _LIMIT_EPS,
     "leg_left_knee_pitch_joint": 2.443460952792061 - _LIMIT_EPS,
     "leg_left_ankle_pitch_joint": -0.7853981633974483 + _LIMIT_EPS,
     "leg_left_ankle_roll_joint": 0.013601303100585938,
     "leg_right_hip_roll_joint": 0.029593753814697265,
     "leg_right_hip_yaw_joint": 0.0038009449839591977,
-    "leg_right_hip_pitch_joint": 0.9817477042468103,
+    "leg_right_hip_pitch_joint": -1.8980527578749847 + _LIMIT_EPS,
     "leg_right_knee_pitch_joint": 2.443460952792061 - _LIMIT_EPS,
     "leg_right_ankle_pitch_joint": -0.7853981633974483 + _LIMIT_EPS,
     "leg_right_ankle_roll_joint": 0.013601303100585938,
@@ -262,8 +268,11 @@ _ANKLE_LEAVES = ["ankle_pitch", "ankle_roll"]
 
 HUMANOID_LITE_BIPED_SQUAT_CFG = HUMANOID_LITE_BIPED_CFG.replace(
     init_state=ArticulationCfg.InitialStateCfg(
-        # base spawn height may need tuning for the squat (robot settles from this pose on reset)
-        pos=(0.0, 0.0, 0.0),
+        # Squat spawn placed to match the real robot (verified in sim, stable under gravity holding
+        # the pose): base(pelvis) origin low with a base pitch that settles to ~14 deg forward torso
+        # tilt, feet flat on the floor. rot is (w,x,y,z) for a ~197 deg base pitch about Y.
+        pos=(0.0, 0.0, -0.22),
+        rot=(-0.147809, 0.0, 0.989016, 0.0),
         joint_pos=dict(HUMANOID_LITE_SQUAT_POSE),
         joint_vel={".*": 0.0},
     ),

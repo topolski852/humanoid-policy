@@ -5,7 +5,9 @@ from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPp
 @configclass
 class BerkeleyHumanoidLiteBipedStandupPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 48
-    max_iterations = 1500
+    # Full-run (--profile full) iteration budget: 16384 envs x 48 steps x 3500 iters = 2.75B samples
+    # (matches Berkeley's full-body sample budget). --profile fast hard-overrides this to 2000.
+    max_iterations = 3500
     save_interval = 100
     experiment_name = "standup_biped"
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
