@@ -1,4 +1,4 @@
-policy_checkpoint_path: /home/nse/humanoid-policy/logs/rsl_rl/standup_biped/2026-07-06_15-38-57/exported/policy.onnx
+policy_checkpoint_path: /home/nse/humanoid/humanoid-policy/logs/rsl_rl/standup_biped/2026-07-06_15-38-57/exported/policy.onnx
 ip_robot_addr: 127.0.0.1
 ip_policy_obs_port: 10000
 ip_host_addr: 127.0.0.1
