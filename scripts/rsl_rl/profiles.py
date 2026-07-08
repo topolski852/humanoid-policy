@@ -65,6 +65,12 @@ def apply_profile(agent_cfg, env_cfg, args_cli):
     if p["max_iterations"] is not None and getattr(args_cli, "max_iterations", None) is None:
         agent_cfg.max_iterations = p["max_iterations"]
 
+    # NOTE: we deliberately do NOT enlarge the GPU collision-pair buffers here. Berkeley ran 16384
+    # envs on this 16 GB card with PhysX defaults; enlarging found_lost/aggregate to 2**27
+    # pre-allocated ~4 GB of VRAM, starving PyTorch's PPO update -> CUDA OutOfMemory. A prior
+    # 16384-env "foundLostPairs overflow" was a physics blow-up symptom (unbounded contacts), not a
+    # steady-state buffer need, so bigger buffers only masked it while breaking memory. Match Berkeley.
+
     print(
         f"[INFO] profile='{profile}': num_envs={env_cfg.scene.num_envs}, "
         f"num_steps_per_env={agent_cfg.num_steps_per_env}, "

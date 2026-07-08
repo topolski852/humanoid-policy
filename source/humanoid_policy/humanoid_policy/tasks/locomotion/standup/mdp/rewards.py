@@ -4,9 +4,28 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import ContactSensor
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def feet_off_ground(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize feet leaving the ground (returns the count of airborne feet, 0..n_feet).
+
+    In a squat -> stand both feet should stay planted the whole time, so this discourages the
+    policy from lifting/kicking a leg to generate momentum. Complements ``feet_slide`` (which only
+    acts while a foot is loaded): a foot lifted clear of the ground escapes ``feet_slide`` but is
+    caught here.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history.torch[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > threshold  # [envs, n_feet]
+    return torch.sum((~in_contact).float(), dim=1)
 
 
 def base_height_exp(

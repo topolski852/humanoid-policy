@@ -67,9 +67,33 @@ class RewardsCfg:
     is_alive = RewTerm(func=mdp.is_alive, weight=0.5)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
 
+    # === keep the feet planted (no kicking a leg out for momentum) ===
+    # penalize horizontal foot velocity while loaded (a foot skating outward on the ground)
+    feet_slide = RewTerm(
+        func=mdp.feet_slide,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
+        },
+        weight=-1.0,
+    )
+    # penalize either foot leaving the ground (catches a kick that lifts the foot clear)
+    feet_off_ground = RewTerm(
+        func=mdp.feet_off_ground,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll")},
+        weight=-0.5,
+    )
+
     # === smoothness / effort ===
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    # penalize joint speed -> rise slowly and controlled (the "slow movement" lever;
+    # base_height_l2 still wants it up, so it rises only as fast as this tolerates)
+    dof_vel_l2 = RewTerm(
+        func=mdp.joint_vel_l2,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        weight=-5.0e-3,
+    )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
@@ -92,10 +116,11 @@ class RewardsCfg:
         weight=-1.0,
     )
     # keep the non-essential joints near default for a clean symmetric stand
+    # stronger than the walk task's -0.2: the leg kick is hip yaw/roll abduction, so tax it harder
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
-        weight=-0.2,
+        weight=-0.5,
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -126,13 +151,22 @@ class EventsCfg(_WalkEventsCfg):
         mode="reset",
         params={"position_range": (0.98, 1.02), "velocity_range": (0.0, 0.0)},
     )
-    # only randomize yaw; keep the base near the ground pose the squat cfg spawns at
+    # randomize yaw, and spawn up to 5 cm high with small base velocity noise so the policy must
+    # settle an imperfect, moving start before committing to the rise (generalizes to a real,
+    # not-perfectly-placed robot; the deployment-side "wait for IMU to settle" gate is separate).
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"yaw": (-3.14, 3.14)},
-            "velocity_range": {},
+            "pose_range": {"yaw": (-3.14, 3.14), "z": (0.0, 0.05)},
+            "velocity_range": {
+                "x": (-0.2, 0.2),
+                "y": (-0.2, 0.2),
+                "z": (-0.2, 0.0),
+                "roll": (-0.2, 0.2),
+                "pitch": (-0.2, 0.2),
+                "yaw": (-0.2, 0.2),
+            },
         },
     )
 

@@ -79,6 +79,9 @@ class LocomotionVelocityEnvCfg(ManagerBasedRLEnvCfg):
         if self.sim.physics is None:
             self.sim.physics = PhysxCfg()
         self.sim.physics.gpu_max_rigid_patch_count = 20 * 2**15
+        # NOTE: the GPU collision-pair buffers stay at Isaac/PhysX defaults at every env count, exactly
+        # like Berkeley (which ran 16384 envs on this 16 GB card fine). Enlarging them starves VRAM and
+        # OOMs the PPO update; a "foundLostPairs overflow" means a physics blow-up, not a small buffer.
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         if self.scene.contact_forces is not None:
