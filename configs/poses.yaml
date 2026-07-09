@@ -1,0 +1,49 @@
+poses:
+  squat:
+    base_pos:
+    - -0.01801764965057373
+    - -0.002714554313570261
+    - -0.23575462400913239
+    base_quat:
+    - 0.0007944114040583372
+    - 0.06994282454252243
+    - -5.5699871154502034e-05
+    - 0.9975506663322449
+    joint_pos:
+      leg_left_ankle_pitch_joint: -0.7068581581115723
+      leg_left_ankle_roll_joint: -0.23561906814575195
+      leg_left_hip_pitch_joint: -1.75
+      leg_left_hip_roll_joint: 0.28999999165534973
+      leg_left_hip_yaw_joint: 0.019999999552965164
+      leg_left_knee_pitch_joint: 2.319999933242798
+      leg_right_ankle_pitch_joint: -0.7068581581115723
+      leg_right_ankle_roll_joint: 0.23561906814575195
+      leg_right_hip_pitch_joint: -1.75
+      leg_right_hip_roll_joint: -0.28999999165534973
+      leg_right_hip_yaw_joint: -0.019999999552965164
+      leg_right_knee_pitch_joint: 2.319999933242798
+    note: ''
+  stand:
+    base_pos:
+    - -0.01801764965057373
+    - -0.002714554313570261
+    - -0.07473780959844589
+    base_quat:
+    - 0.0008213412947952747
+    - 0.0049959332682192326
+    - -0.005003895610570908
+    - 0.9999746680259705
+    joint_pos:
+      leg_left_ankle_pitch_joint: -0.5600000023841858
+      leg_left_ankle_roll_joint: -0.23561906814575195
+      leg_left_hip_pitch_joint: -0.23999999463558197
+      leg_left_hip_roll_joint: 0.29999998211860657
+      leg_left_hip_yaw_joint: 0.0
+      leg_left_knee_pitch_joint: 0.8299999833106995
+      leg_right_ankle_pitch_joint: -0.5600000023841858
+      leg_right_ankle_roll_joint: 0.23561906814575195
+      leg_right_hip_pitch_joint: -0.23999999463558197
+      leg_right_hip_roll_joint: -0.29999998211860657
+      leg_right_hip_yaw_joint: -0.0
+      leg_right_knee_pitch_joint: 0.8299999833106995
+    note: ''

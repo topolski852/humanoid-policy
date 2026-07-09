@@ -28,6 +28,41 @@ def feet_off_ground(
     return torch.sum((~in_contact).float(), dim=1)
 
 
+_pose_target_cache: dict = {}
+
+
+def track_joint_pose_exp(
+    env: "ManagerBasedRLEnv",
+    target: dict,
+    std: float = 0.7,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Dense reward for matching a target joint pose (``{joint_name: radians}``).
+
+    Returns ``exp(-mean_sq_err / std**2)`` in [0, 1], peaking at 1 when the joints match ``target``.
+    Rewards reaching the *standing* pose (loaded from the pose library) rather than just gaining
+    height. The joint index map is resolved by name once and cached (sim joint order is interleaved,
+    so never assume the config order). Empty ``target`` returns 1s (no-op) so a missing pose library
+    degrades gracefully instead of crashing the env.
+    """
+    asset = env.scene[asset_cfg.name]
+    device = env.device  # torch device (asset.data.*.device is warp's Device, not torch's)
+    key = (id(env), asset_cfg.name, tuple(sorted(target.items())))
+    cache = _pose_target_cache.get(key)
+    if cache is None:
+        names = list(asset.data.joint_names)
+        order = [i for i in range(len(names)) if names[i] in target]
+        idx = torch.tensor(order, device=device, dtype=torch.long)
+        vals = torch.tensor([target[names[i]] for i in order], device=device, dtype=torch.float32)
+        _pose_target_cache[key] = cache = (idx, vals)
+    idx, vals = cache
+    if idx.numel() == 0:
+        return torch.ones(env.num_envs, device=device)
+    q = asset.data.joint_pos[:]  # materialize ProxyArray -> torch (num_envs, n_joints)
+    err = torch.mean(torch.square(q[:, idx] - vals), dim=1)
+    return torch.exp(-err / (std * std))
+
+
 def base_height_exp(
     env: "ManagerBasedRLEnv",
     target_height: float,

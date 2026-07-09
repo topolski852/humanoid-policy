@@ -13,16 +13,23 @@ from humanoid_policy.tasks.locomotion.velocity.config.biped.env_cfg import (
     ActionsCfg,
     EventsCfg as _WalkEventsCfg,
 )
-from humanoid_policy_assets.robots.berkeley_humanoid_lite import (
-    HUMANOID_LITE_BIPED_SQUAT_CFG,
-    HUMANOID_LITE_LEG_JOINTS,
+from humanoid_policy_assets.robots.humanoid import (
+    HUMANOID_BIPED_SQUAT_CFG,
+    HUMANOID_LEG_JOINTS,
 )
+from humanoid_policy import pose_lib
 
-# Nominal standing base height [m]. The `base` link is the PELVIS (low, near the feet), not the
-# torso top: measured in sim the pelvis sits ~-0.03 m standing vs ~-0.24 m in the deep squat, so the
-# stand-up is a ~0.2 m pelvis rise. Target 0.0 (a few cm above the settled stand to encourage a full
-# rise). (An earlier 0.55 assumed base==torso-top and was unreachable.)
-STANDING_BASE_HEIGHT = 0.0
+# Pose library (authored in scripts/rsl_rl/pose_editor.py): spawn from `squat`, reward matching
+# `stand`. Both are floor-verified, stability-checked poses. Loaded at import (training runs from
+# the repo root). Missing entries degrade gracefully (fall back to the cfg's built-in squat / no-op
+# pose reward).
+_POSES = pose_lib.load_library(pose_lib.DEFAULT_LIBRARY_PATH)
+_SQUAT = _POSES.get("squat")
+_STAND = _POSES.get("stand")
+_STAND_JOINTS = dict(_STAND.joint_pos) if _STAND is not None else {}
+# Nominal standing base height [m] = the stand pose's pelvis height (the `base` link is the pelvis,
+# low near the feet, not the torso top). Falls back to 0.0 if the library is absent.
+STANDING_BASE_HEIGHT = float(_STAND.base_pos[2]) if _STAND is not None else 0.0
 
 
 @configclass
@@ -46,25 +53,33 @@ class CommandsCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for squat -> stand."""
+    """Reward terms for squat -> stand.
 
-    # === main task: rise to and hold standing height ===
-    # coarse quadratic pull toward standing height (gradient all the way from the squat)
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        params={"target_height": STANDING_BASE_HEIGHT},
-        weight=-10.0,
+    Design: **prioritize stability, then get close to the stand pose.** The dominant terms keep the
+    robot upright and alive; the pose-match term is a secondary shaping signal toward the authored
+    `stand` pose (so the policy learns to *reach a stable standing posture*, not just gain height).
+    """
+
+    # === get close to the STANDING pose (secondary shaping) ===
+    # dense match to the authored, stability-checked stand pose (exp in [0,1])
+    track_stand_pose = RewTerm(
+        func=mdp.track_joint_pose_exp,
+        params={"target": _STAND_JOINTS, "std": 0.7, "asset_cfg": SceneEntityCfg("robot")},
+        weight=1.5,
     )
-    # sharp bonus for settling exactly at standing height
+    # modest reinforcement of standing pelvis height (pose-match implies height with feet planted;
+    # this steadies the rise). std wide enough to give gradient across the full squat->stand range.
     base_height_bonus = RewTerm(
         func=mdp.base_height_exp,
-        params={"target_height": STANDING_BASE_HEIGHT, "std": 0.15},
-        weight=2.0,
+        params={"target_height": STANDING_BASE_HEIGHT, "std": 0.25},
+        weight=0.5,
     )
+
+    # === stability (dominant) ===
     # stay upright
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
-    # alive bonus (discourages toppling to end the episode early)
-    is_alive = RewTerm(func=mdp.is_alive, weight=0.5)
+    # alive bonus (strong: staying balanced for the whole episode dominates the return)
+    is_alive = RewTerm(func=mdp.is_alive, weight=1.0)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
 
     # === keep the feet planted (no kicking a leg out for momentum) ===
@@ -91,17 +106,17 @@ class RewardsCfg:
     # base_height_l2 still wants it up, so it rises only as fast as this tolerates)
     dof_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-5.0e-3,
     )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-2.0e-3,
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-1.0e-6,
     )
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
@@ -115,18 +130,8 @@ class RewardsCfg:
         },
         weight=-1.0,
     )
-    # keep the non-essential joints near default for a clean symmetric stand
-    # stronger than the walk task's -0.2: the leg kick is hip yaw/roll abduction, so tax it harder
-    joint_deviation_hip = RewTerm(
-        func=mdp.joint_deviation_l1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
-        weight=-0.5,
-    )
-    joint_deviation_ankle_roll = RewTerm(
-        func=mdp.joint_deviation_l1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_roll_joint"])},
-        weight=-0.2,
-    )
+    # (joint_deviation_hip / joint_deviation_ankle_roll removed: the lateral stance is now specified
+    # by the stand pose and handled by track_stand_pose, so separate deviation terms are redundant.)
 
 
 @configclass
@@ -177,7 +182,7 @@ class CurriculumsCfg:
 
 
 @configclass
-class BerkeleyHumanoidLiteBipedStandupEnvCfg(LocomotionVelocityEnvCfg):
+class HumanoidBipedStandupEnvCfg(LocomotionVelocityEnvCfg):
 
     commands: CommandsCfg = CommandsCfg()
     observations: ObservationsCfg = ObservationsCfg()
@@ -195,5 +200,14 @@ class BerkeleyHumanoidLiteBipedStandupEnvCfg(LocomotionVelocityEnvCfg):
         # shorter episodes than walking — standing up is a quick transient
         self.episode_length_s = 10.0
 
-        # start every environment in the deep squat (contract pose + per-joint firmware gains)
-        self.scene.robot = HUMANOID_LITE_BIPED_SQUAT_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        # start every environment in the deep squat. Prefer the authored, floor-verified library
+        # `squat` pose (exact snapped base height -> no spawn-height guessing / settle needed);
+        # fall back to the cfg's built-in squat if the library is unavailable.
+        robot = HUMANOID_BIPED_SQUAT_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        if _SQUAT is not None:
+            robot.init_state = robot.init_state.replace(
+                pos=tuple(float(x) for x in _SQUAT.base_pos),
+                rot=tuple(float(x) for x in _SQUAT.base_quat),  # (w, x, y, z)
+                joint_pos={k: float(v) for k, v in _SQUAT.joint_pos.items()},
+            )
+        self.scene.robot = robot
