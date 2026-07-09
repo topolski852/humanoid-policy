@@ -14,6 +14,7 @@ dependencies = [
   "onnxruntime",
   "pyaml",
   "scipy",
+  "rsl-rl-lib==5.0.1",
   "humanoid_policy",
   "humanoid_policy_assets",
 ]
@@ -66,6 +67,7 @@ reportPrivateUsage = "warning"
 package-dir = {"" = "source"}
 
 [tool.uv]
+prerelease = "allow"
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 

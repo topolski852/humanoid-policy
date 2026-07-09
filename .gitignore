@@ -4,13 +4,16 @@
 
 # Python
 .DS_Store
+# Virtual environment (repo-local, created by `uv sync`)
+.venv/
 **/*.egg-info/
 **/__pycache__/
 **/.pytest_cache/
 **/*.pyc
 **/*.pb
 
-# IDE
+# IDE / local agent settings
+**/.claude/
 **/.idea/
 **/.vscode/
 # Don't ignore the top-level .vscode directory as it is

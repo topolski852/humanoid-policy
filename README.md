@@ -8,6 +8,19 @@ This repo is **training only** — hardware interface, firmware, teleop, and sim
 deployment code live elsewhere. It trains policies in Isaac Lab (rsl_rl / PPO), exports them
 to ONNX/JIT, and emits a deployment contract that `humanoid-control` loads.
 
+## Setup
+
+Self-contained via [`uv`](https://docs.astral.sh/uv/) — no external Isaac/Berkeley install needed.
+From the repo root:
+
+```bash
+uv sync                       # creates .venv with Isaac Sim / Isaac Lab / torch (pinned via uv.lock)
+export OMNI_KIT_ACCEPT_EULA=YES   # one-time: accept the Omniverse Kit EULA for headless runs
+```
+
+Then run scripts with the repo-local interpreter, e.g. `.venv/bin/python scripts/rsl_rl/train.py …`
+(or `uv run python scripts/rsl_rl/train.py …`). See [COMMANDS.md](COMMANDS.md) for full recipes.
+
 ## Training variants
 
 Training type is selected with a `--variant` flag:
@@ -53,5 +66,7 @@ source/humanoid_policy_assets/    robot model: USD / URDF / meshes
 
 ## Attribution
 
-Derived from [Berkeley Humanoid Lite](https://github.com/HybridRobotics/Berkeley-Humanoid-Lite)
-(MIT). The physical robot model retains its original `berkeley_humanoid_lite` identifiers.
+The robot model is loosely derived from
+[Berkeley Humanoid Lite](https://github.com/HybridRobotics/Berkeley-Humanoid-Lite) (MIT); the
+original copyright notice is retained in the source headers per the license. Identifiers in this
+repo have since been renamed to the generic `humanoid` / `HUMANOID_*` scheme.
