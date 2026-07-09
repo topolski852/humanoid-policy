@@ -1,6 +1,8 @@
-# Berkeley Humanoid Lite Assets
+# Humanoid Assets
 
-This repository contains the assets files and tools necessary for working with the Berkeley Humanoid Lite model. It includes scripts for generating URDF files from Onshape and converting them to MJCF and USD formats to use in multiple simulators.
+This package contains the asset files and tools necessary for working with the humanoid robot model. It includes scripts for generating URDF files from Onshape and converting them to MJCF and USD formats to use in multiple simulators.
+
+> The robot model is loosely derived from [Berkeley Humanoid Lite](https://github.com/HybridRobotics/Berkeley-Humanoid-Lite) (MIT).
 
 
 ## Generate description file from Onshape
@@ -18,20 +20,20 @@ Then, run the corresponding export script:
 For URDF:
 
 ```bash
-uv run ./scripts/export_onshape_to_urdf.py --config ./data/robots/berkeley_humanoid/berkeley_humanoid_lite/urdf/config.json
+uv run ./scripts/export_onshape_to_urdf.py --config ./data/robots/humanoid/urdf/config.json
 ```
 
 For MJCF
 
 ```bash
-uv run ./scripts/export_onshape_to_mjcf.py --config ./data/robots/berkeley_humanoid/berkeley_humanoid_lite/mjcf/config.json
+uv run ./scripts/export_onshape_to_mjcf.py --config ./data/robots/humanoid/mjcf/config.json
 ```
 
 > **Note**
 >
 > Before running the script, make sure that the robot in the OnShape project is configured correctly, and all joints are at reset position.
 
-The resulting URDF will be generated at `/data/robots/berkeley_humanoid/berkeley_humanoid_lite/urdf/`, MJCF will be generated at `/data/robots/berkeley_humanoid/berkeley_humanoid_lite/mjcf/`, and the STL meshes will be shared under `/data/robots/berkeley_humanoid/berkeley_humanoid_lite/meshes/`.
+The resulting URDF will be generated at `/data/robots/humanoid/urdf/`, MJCF will be generated at `/data/robots/humanoid/mjcf/`, and the STL meshes will be shared under `/data/robots/humanoid/meshes/`.
 
 
 ### Cleaning onshape-to-robot cache
@@ -48,7 +50,7 @@ onshape-to-robot-clear-cache
 To generate USD file from URDF file, simply run the following command.
 
 ```bash
-uv run ./scripts/convert_urdf_to_usd.py ./data/robots/berkeley_humanoid/berkeley_humanoid_lite/urdf/berkeley_humanoid_lite.urdf 
+uv run ./scripts/convert_urdf_to_usd.py ./data/robots/humanoid/urdf/humanoid.urdf 
 ```
 
 

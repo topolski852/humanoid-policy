@@ -1,1 +1,1 @@
-from .berkeley_humanoid_lite import *
+from .humanoid import *

@@ -11,7 +11,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": env_cfg.BerkeleyHumanoidLiteEnvCfg,
-        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.BerkeleyHumanoidLitePPORunnerCfg,
+        "env_cfg_entry_point": env_cfg.HumanoidEnvCfg,
+        "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.HumanoidPPORunnerCfg,
     },
 )

@@ -211,7 +211,7 @@ def main():
     try:
         if int(env.action_space.shape[-1]) == 12:
             import json
-            from humanoid_policy_assets.robots.berkeley_humanoid_lite import HUMANOID_LITE_LEG_JOINTS
+            from humanoid_policy_assets.robots.humanoid import HUMANOID_LEG_JOINTS
 
             # per-joint position limits from the live articulation (sim order -> by name)
             robot = env.unwrapped.scene["robot"]
@@ -232,7 +232,7 @@ def main():
                 return sim_name[len("leg_"):] if sim_name.startswith("leg_") else sim_name
 
             contract_joints = []
-            for idx, sim_name in enumerate(HUMANOID_LITE_LEG_JOINTS):
+            for idx, sim_name in enumerate(HUMANOID_LEG_JOINTS):
                 lo, hi = limit_by_name.get(sim_name, [None, None])
                 contract_joints.append({
                     "index": idx,
@@ -251,7 +251,7 @@ def main():
                     "task": args_cli.task,
                     "note": "Sim-side contract for humanoid-control; joint_order/obs/action match leg_policy_params.json.",
                 },
-                "canonical_joint_order": [_contract_name(n) for n in HUMANOID_LITE_LEG_JOINTS],
+                "canonical_joint_order": [_contract_name(n) for n in HUMANOID_LEG_JOINTS],
                 "control": {
                     "policy_dt": float(env_cfg.sim.dt * env_cfg.decimation),
                     "control_dt": 0.004,

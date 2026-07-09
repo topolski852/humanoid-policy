@@ -11,7 +11,7 @@ from isaaclab.utils.configclass import configclass
 
 import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
 from humanoid_policy.tasks.locomotion.velocity.velocity_env_cfg import LocomotionVelocityEnvCfg
-from humanoid_policy_assets.robots.berkeley_humanoid_lite import HUMANOID_LITE_BIPED_CFG, HUMANOID_LITE_LEG_JOINTS
+from humanoid_policy_assets.robots.humanoid import HUMANOID_BIPED_CFG, HUMANOID_LEG_JOINTS
 
 
 ##
@@ -62,12 +62,12 @@ class ObservationsCfg:
         )
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS, preserve_order=True)},
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True)},
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
         joint_vel = ObsTerm(
             func=mdp.joint_vel_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS, preserve_order=True)},
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True)},
             noise=Unoise(n_min=-2.0, n_max=2.0),
         )
         actions = ObsTerm(func=mdp.last_action)
@@ -94,7 +94,7 @@ class ActionsCfg:
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=HUMANOID_LITE_LEG_JOINTS,
+        joint_names=HUMANOID_LEG_JOINTS,
         scale=0.25,
         preserve_order=True,
         use_default_offset=True,
@@ -147,12 +147,12 @@ class RewardsCfg:
     )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-2.0e-3,
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LITE_LEG_JOINTS)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-1.0e-6,
     )
     dof_pos_limits = RewTerm(
@@ -316,7 +316,7 @@ class CurriculumsCfg:
 
 
 @configclass
-class BerkeleyHumanoidLiteBipedEnvCfg(LocomotionVelocityEnvCfg):
+class HumanoidBipedEnvCfg(LocomotionVelocityEnvCfg):
 
     # Policy commands
     commands: CommandsCfg = CommandsCfg()
@@ -348,4 +348,4 @@ class BerkeleyHumanoidLiteBipedEnvCfg(LocomotionVelocityEnvCfg):
         self.decimation = 8
 
         # Scene
-        self.scene.robot = HUMANOID_LITE_BIPED_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        self.scene.robot = HUMANOID_BIPED_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")

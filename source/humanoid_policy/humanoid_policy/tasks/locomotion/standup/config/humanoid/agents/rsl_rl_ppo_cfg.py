@@ -3,7 +3,7 @@ from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPp
 
 
 @configclass
-class BerkeleyHumanoidLiteStandupPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class HumanoidStandupPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 48
     max_iterations = 1500
     save_interval = 100

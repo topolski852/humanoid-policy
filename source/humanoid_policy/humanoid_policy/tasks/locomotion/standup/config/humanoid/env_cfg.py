@@ -17,20 +17,20 @@ from humanoid_policy.tasks.locomotion.standup.config.biped.env_cfg import (
     TerminationsCfg,
     CurriculumsCfg,
 )
-from humanoid_policy_assets.robots.berkeley_humanoid_lite import (
-    HUMANOID_LITE_CFG,
-    HUMANOID_LITE_SQUAT_POSE,
-    HUMANOID_LITE_ARM_JOINTS,
+from humanoid_policy_assets.robots.humanoid import (
+    HUMANOID_CFG,
+    HUMANOID_SQUAT_POSE,
+    HUMANOID_ARM_JOINTS,
 )
 
 # full-body squat: arms parked at 0, legs in the contract squat pose
-_HUMANOID_SQUAT_POSE = {joint: 0.0 for joint in HUMANOID_LITE_ARM_JOINTS}
-_HUMANOID_SQUAT_POSE.update(HUMANOID_LITE_SQUAT_POSE)
+_HUMANOID_SQUAT_POSE = {joint: 0.0 for joint in HUMANOID_ARM_JOINTS}
+_HUMANOID_SQUAT_POSE.update(HUMANOID_SQUAT_POSE)
 
 # NOTE: the full humanoid keeps the generic actuator gains (the per-joint firmware gains in the
 # contract are legs-only). Arm regularization for stand-up is minimal for now — this variant is
 # future-facing until arms are physically connected.
-HUMANOID_LITE_SQUAT_CFG = HUMANOID_LITE_CFG.replace(
+HUMANOID_SQUAT_CFG = HUMANOID_CFG.replace(
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.0),
         joint_pos=_HUMANOID_SQUAT_POSE,
@@ -54,7 +54,7 @@ class EventsCfg(_WalkHumanoidEventsCfg):
 
 
 @configclass
-class BerkeleyHumanoidLiteStandupEnvCfg(LocomotionVelocityEnvCfg):
+class HumanoidStandupEnvCfg(LocomotionVelocityEnvCfg):
 
     commands: CommandsCfg = CommandsCfg()
     observations: ObservationsCfg = ObservationsCfg()
@@ -70,4 +70,4 @@ class BerkeleyHumanoidLiteStandupEnvCfg(LocomotionVelocityEnvCfg):
         self.decimation = 8
         self.episode_length_s = 10.0
 
-        self.scene.robot = HUMANOID_LITE_SQUAT_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        self.scene.robot = HUMANOID_SQUAT_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
