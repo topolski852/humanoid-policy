@@ -27,6 +27,7 @@ _POSES = pose_lib.load_library(pose_lib.DEFAULT_LIBRARY_PATH)
 _SQUAT = _POSES.get("squat")
 _STAND = _POSES.get("stand")
 _STAND_JOINTS = dict(_STAND.joint_pos) if _STAND is not None else {}
+_SQUAT_JOINTS = dict(_SQUAT.joint_pos) if _SQUAT is not None else {}
 # Nominal standing base height [m] = the stand pose's pelvis height (the `base` link is the pelvis,
 # low near the feet, not the torso top). Falls back to 0.0 if the library is absent.
 STANDING_BASE_HEIGHT = float(_STAND.base_pos[2]) if _STAND is not None else 0.0
@@ -60,12 +61,18 @@ class RewardsCfg:
     `stand` pose (so the policy learns to *reach a stable standing posture*, not just gain height).
     """
 
-    # === get close to the STANDING pose (secondary shaping) ===
-    # dense match to the authored, stability-checked stand pose (exp in [0,1])
+    # === get close to the STANDING pose (the task, alongside staying upright) ===
+    # single match to the full stand pose, per-joint normalized by the squat->stand travel so every
+    # joint (incl. the small hip_roll/ankle_roll "feet-in" joints) counts equally toward the pose.
     track_stand_pose = RewTerm(
         func=mdp.track_joint_pose_exp,
-        params={"target": _STAND_JOINTS, "std": 0.7, "asset_cfg": SceneEntityCfg("robot")},
-        weight=1.5,
+        params={
+            "target": _STAND_JOINTS,
+            "reference": _SQUAT_JOINTS,
+            "std": 0.4,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+        weight=2.0,
     )
     # modest reinforcement of standing pelvis height (pose-match implies height with feet planted;
     # this steadies the rise). std wide enough to give gradient across the full squat->stand range.

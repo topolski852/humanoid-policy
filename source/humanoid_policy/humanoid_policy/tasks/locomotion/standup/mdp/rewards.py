@@ -34,33 +34,52 @@ _pose_target_cache: dict = {}
 def track_joint_pose_exp(
     env: "ManagerBasedRLEnv",
     target: dict,
-    std: float = 0.7,
+    reference: dict | None = None,
+    std: float = 0.4,
+    min_delta: float = 0.05,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Dense reward for matching a target joint pose (``{joint_name: radians}``).
+    """Dense reward for matching a target joint pose (``{joint_name: radians}``), in [0, 1].
 
-    Returns ``exp(-mean_sq_err / std**2)`` in [0, 1], peaking at 1 when the joints match ``target``.
-    Rewards reaching the *standing* pose (loaded from the pose library) rather than just gaining
-    height. The joint index map is resolved by name once and cached (sim joint order is interleaved,
-    so never assume the config order). Empty ``target`` returns 1s (no-op) so a missing pose library
-    degrades gracefully instead of crashing the env.
+    Measures per-joint closeness normalized by each joint's ``|reference - target|`` travel (the
+    squat->stand motion, clamped to ``min_delta``), then averages the per-joint exponentials:
+    ``mean_j exp(-((q_j - target_j)/denom_j)**2 / std**2)``.
+
+    Why normalized + per-joint-averaged rather than a single mean-squared error: the big sagittal
+    joints (knee/hip_pitch, ~1.5 rad of travel) otherwise dominate the error and drown out the small
+    lateral 'feet-in' joints (hip_roll/ankle_roll, ~0.2 rad), so the robot could score ~full reward
+    with its feet still wide. Normalizing puts every joint on the same 0..1 "fraction of the way to
+    the stand pose" scale, so the feet count as much as the knees. Averaging per-joint also makes the
+    reward climb only once most joints match, so the feet are drawn in as it reaches standing.
+
+    ``reference`` is the start (squat) pose; if omitted, falls back to unnormalized absolute error.
+    The joint index map + denominators are resolved by name once and cached (sim joint order is
+    interleaved). Empty ``target`` returns 1s so a missing pose library degrades gracefully.
     """
     asset = env.scene[asset_cfg.name]
     device = env.device  # torch device (asset.data.*.device is warp's Device, not torch's)
-    key = (id(env), asset_cfg.name, tuple(sorted(target.items())))
+    ref = reference or {}
+    key = (id(env), asset_cfg.name, tuple(sorted(target.items())), tuple(sorted(ref.items())), min_delta)
     cache = _pose_target_cache.get(key)
     if cache is None:
         names = list(asset.data.joint_names)
         order = [i for i in range(len(names)) if names[i] in target]
         idx = torch.tensor(order, device=device, dtype=torch.long)
         vals = torch.tensor([target[names[i]] for i in order], device=device, dtype=torch.float32)
-        _pose_target_cache[key] = cache = (idx, vals)
-    idx, vals = cache
+        if ref:
+            denom = torch.tensor(
+                [max(abs(ref.get(names[i], target[names[i]]) - target[names[i]]), min_delta) for i in order],
+                device=device, dtype=torch.float32,
+            )
+        else:
+            denom = torch.ones(len(order), device=device, dtype=torch.float32)
+        _pose_target_cache[key] = cache = (idx, vals, denom)
+    idx, vals, denom = cache
     if idx.numel() == 0:
         return torch.ones(env.num_envs, device=device)
     q = asset.data.joint_pos[:]  # materialize ProxyArray -> torch (num_envs, n_joints)
-    err = torch.mean(torch.square(q[:, idx] - vals), dim=1)
-    return torch.exp(-err / (std * std))
+    e = (q[:, idx] - vals) / denom
+    return torch.mean(torch.exp(-(e * e) / (std * std)), dim=1)
 
 
 def base_height_exp(

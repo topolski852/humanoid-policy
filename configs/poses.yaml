@@ -27,7 +27,7 @@ poses:
     base_pos:
     - -0.01801764965057373
     - -0.002714554313570261
-    - -0.07473780959844589
+    - -0.08271975815296173
     base_quat:
     - 0.0008213412947952747
     - 0.0049959332682192326
@@ -35,15 +35,15 @@ poses:
     - 0.9999746680259705
     joint_pos:
       leg_left_ankle_pitch_joint: -0.5600000023841858
-      leg_left_ankle_roll_joint: -0.23561906814575195
+      leg_left_ankle_roll_joint: -0.07000000029802322
       leg_left_hip_pitch_joint: -0.23999999463558197
-      leg_left_hip_roll_joint: 0.29999998211860657
+      leg_left_hip_roll_joint: 0.10999999940395355
       leg_left_hip_yaw_joint: 0.0
       leg_left_knee_pitch_joint: 0.8299999833106995
       leg_right_ankle_pitch_joint: -0.5600000023841858
-      leg_right_ankle_roll_joint: 0.23561906814575195
+      leg_right_ankle_roll_joint: 0.07000000029802322
       leg_right_hip_pitch_joint: -0.23999999463558197
-      leg_right_hip_roll_joint: -0.29999998211860657
+      leg_right_hip_roll_joint: -0.10999999940395355
       leg_right_hip_yaw_joint: -0.0
       leg_right_knee_pitch_joint: 0.8299999833106995
     note: ''
