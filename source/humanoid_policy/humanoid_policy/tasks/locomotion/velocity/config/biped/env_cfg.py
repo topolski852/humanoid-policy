@@ -12,6 +12,12 @@ from isaaclab.utils.configclass import configclass
 import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
 from humanoid_policy.tasks.locomotion.velocity.velocity_env_cfg import LocomotionVelocityEnvCfg
 from humanoid_policy_assets.robots.humanoid import HUMANOID_BIPED_CFG, HUMANOID_LEG_JOINTS
+from humanoid_policy import pose_lib
+
+# Spawn the walk policy from the authored `stand` pose (plus the reset randomization below), so it is
+# robust to exactly where the standup policy ends -> clean stand->walk handoff. Falls back to the cfg
+# default standing pose if the pose library is unavailable.
+_STAND = pose_lib.load_library(pose_lib.DEFAULT_LIBRARY_PATH).get("stand")
 
 
 ##
@@ -161,7 +167,8 @@ class RewardsCfg:
     )
 
     # === Reward for encouraging behaviors ===
-    # encourage robot to take steps
+    # encourage robot to take steps (small bump 1.0 -> 1.15 to reduce the shuffly, short-step gait;
+    # kept small because this legs-only biped has no arms to balance a longer stride)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         params={
@@ -169,7 +176,7 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
             "threshold": 0.4,
         },
-        weight=1.0,
+        weight=1.15,
     )
     # penalize feet sliding on the ground to exploit physics sim inaccuracies
     feet_slide = RewTerm(
@@ -181,7 +188,7 @@ class RewardsCfg:
         weight=-0.1,
     )
 
-    # penalize undesired contacts
+    # penalize undesired contacts (falls, and -- with self-collision enabled -- leg-vs-leg contact)
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         params={
@@ -347,5 +354,13 @@ class HumanoidBipedEnvCfg(LocomotionVelocityEnvCfg):
         # 25 Hz override
         self.decimation = 8
 
-        # Scene
-        self.scene.robot = HUMANOID_BIPED_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        # Scene: spawn STANDING at the authored stand pose (+ reset randomization) for a clean
+        # stand->walk handoff, instead of the cfg's default standing pose.
+        robot = HUMANOID_BIPED_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        if _STAND is not None:
+            robot.init_state = robot.init_state.replace(
+                pos=tuple(float(x) for x in _STAND.base_pos),
+                rot=tuple(float(x) for x in _STAND.base_quat),  # (w, x, y, z)
+                joint_pos={k: float(v) for k, v in _STAND.joint_pos.items()},
+            )
+        self.scene.robot = robot
