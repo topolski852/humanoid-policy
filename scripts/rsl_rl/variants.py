@@ -11,6 +11,7 @@ VARIANTS = {
     "walk-humanoid": "Walk-Humanoid-Policy-v0",
     "standup-biped": "Standup-Humanoid-Policy-Biped-v0",
     "standup-humanoid": "Standup-Humanoid-Policy-v0",
+    "squat-biped": "Squat-Humanoid-Policy-Biped-v0",
 }
 
 
