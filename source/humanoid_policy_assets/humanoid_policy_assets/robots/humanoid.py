@@ -245,7 +245,7 @@ _CONTRACT_KD = {
     "leg_left_hip_roll_joint": 4.0, "leg_left_hip_yaw_joint": 0.5, "leg_left_hip_pitch_joint": 9.8,
     "leg_left_knee_pitch_joint": 2.45, "leg_left_ankle_pitch_joint": 2.0, "leg_left_ankle_roll_joint": 4.0,
     "leg_right_hip_roll_joint": 4.0, "leg_right_hip_yaw_joint": 1.0, "leg_right_hip_pitch_joint": 9.8,
-    "leg_right_knee_pitch_joint": 1.22, "leg_right_ankle_pitch_joint": 0.5, "leg_right_ankle_roll_joint": 2.0,
+    "leg_right_knee_pitch_joint": 1.22, "leg_right_ankle_pitch_joint": 0.25, "leg_right_ankle_roll_joint": 2.0,
 }
 _CONTRACT_EFFORT = {
     "leg_left_hip_roll_joint": 6.0, "leg_left_hip_yaw_joint": 12.0, "leg_left_hip_pitch_joint": 9.5,
@@ -297,3 +297,34 @@ HUMANOID_BIPED_SQUAT_CFG = HUMANOID_BIPED_CFG.replace(
 )
 """Humanoid biped configured for squat->stand: deep-squat init pose + per-joint
 firmware PD gains from the humanoid-control policy contract."""
+
+
+HUMANOID_BIPED_WALK_CFG = HUMANOID_BIPED_CFG.replace(
+    # Same real per-joint firmware PD gains as the squat cfg (the deployed ESC/contract gains,
+    # asymmetric, kp up to 68.4), but WITHOUT the squat init pose — the walk/velocity env sets
+    # its own standing init_state. Point the walk task at this so the policy trains on the real
+    # deployed plant instead of the uniform kp=20/kd=2 of HUMANOID_BIPED_CFG. REQUIRES RETRAINING
+    # + re-export of deploy/walk. Gains verified against humanoid-studio/configs/humanoid_lite.json.
+    actuators={
+        "legs": ImplicitActuatorCfg(
+            joint_names_expr=_LEG_GROUP,
+            velocity_limit=10.0,
+            effort_limit=_subset(_CONTRACT_EFFORT, _LEG_LEAVES),
+            stiffness=_subset(_CONTRACT_KP, _LEG_LEAVES),
+            damping=_subset(_CONTRACT_KD, _LEG_LEAVES),
+            armature=0.007,
+        ),
+        "ankles": ImplicitActuatorCfg(
+            joint_names_expr=_ANKLE_GROUP,
+            velocity_limit=10.0,
+            effort_limit=_subset(_CONTRACT_EFFORT, _ANKLE_LEAVES),
+            stiffness=_subset(_CONTRACT_KP, _ANKLE_LEAVES),
+            damping=_subset(_CONTRACT_KD, _ANKLE_LEAVES),
+            armature=0.002,
+        ),
+    },
+)
+"""Humanoid biped for the WALK / velocity task: real per-joint firmware PD gains from the
+policy contract (matches the ESC gains in humanoid-control / humanoid_lite.json), keeping
+HUMANOID_BIPED_CFG's default init pose (the walk env overrides init_state itself). Use this
+instead of HUMANOID_BIPED_CFG so the walk policy trains on the deployed hardware plant."""
