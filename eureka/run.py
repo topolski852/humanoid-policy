@@ -55,7 +55,8 @@ def run_candidate_subprocess(weights: dict[str, float], cfg: C.SearchConfig) -> 
                 run_dir = _find_run_dir(cfg.variant, cfg.run_name, t0)
             else:
                 curve = scalar_series(read_scalars(run_dir), C.TAG_MEAN_REWARD)
-                if curve and plateaued(curve, cfg.inner_patience, cfg.inner_min_delta):
+                if len(curve) >= cfg.inner_min_iters and plateaued(
+                        curve, cfg.inner_patience, cfg.inner_min_delta):
                     reason = f"plateau at iter {len(curve)}"
                     break
                 if len(curve) >= cfg.max_iterations:

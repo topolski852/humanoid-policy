@@ -85,6 +85,7 @@ class SearchConfig:
     min_delta: float = 1e-3        # fitness improvement that counts
     backend: str = "subprocess"    # subprocess | persistent
     seed: int = 0
+    inner_min_iters: int = 1500    # never plateau-stop before this many iters (let walking emerge)
     poll_secs: float = 20.0        # how often to poll the run's TB for plateau
     dry_run: bool = False          # score an existing run dir + exit (no training/API)
     log: str | None = None
@@ -107,6 +108,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--inner-patience", type=int, default=d.inner_patience,
                     help="stop a training run after N iters without mean_reward improvement")
     ap.add_argument("--inner-min-delta", type=float, default=d.inner_min_delta)
+    ap.add_argument("--inner-min-iters", type=int, default=d.inner_min_iters,
+                    help="never plateau-stop a run before this many iters (walking emerges ~3000)")
     ap.add_argument("--patience", type=int, default=d.patience,
                     help="stop the search after N generations without fitness improvement")
     ap.add_argument("--min-delta", type=float, default=d.min_delta)
@@ -128,6 +131,7 @@ def build_config() -> SearchConfig:
         variant=a.variant, profile=a.profile, max_iterations=a.max_iterations,
         iterations=a.iterations, candidates=a.candidates,
         inner_patience=a.inner_patience, inner_min_delta=a.inner_min_delta,
+        inner_min_iters=a.inner_min_iters,
         patience=a.patience, min_delta=a.min_delta, backend=a.backend, seed=a.seed,
         poll_secs=a.poll_secs, dry_run=a.dry_run, log=a.log, best_out=a.best_out,
         verbose=not a.quiet,
