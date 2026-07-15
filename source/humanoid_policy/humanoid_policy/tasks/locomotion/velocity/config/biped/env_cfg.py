@@ -11,7 +11,7 @@ from isaaclab.utils.configclass import configclass
 
 import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
 from humanoid_policy.tasks.locomotion.velocity.velocity_env_cfg import LocomotionVelocityEnvCfg
-from humanoid_policy_assets.robots.humanoid import HUMANOID_BIPED_CFG, HUMANOID_LEG_JOINTS
+from humanoid_policy_assets.robots.humanoid import HUMANOID_BIPED_WALK_CFG, HUMANOID_LEG_JOINTS
 from humanoid_policy import pose_lib
 
 # Spawn the walk policy from the authored `stand` pose (plus the reset randomization below), so it is
@@ -356,7 +356,7 @@ class HumanoidBipedEnvCfg(LocomotionVelocityEnvCfg):
 
         # Scene: spawn STANDING at the authored stand pose (+ reset randomization) for a clean
         # stand->walk handoff, instead of the cfg's default standing pose.
-        robot = HUMANOID_BIPED_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
+        robot = HUMANOID_BIPED_WALK_CFG.replace(prim_path="{ENV_REGEX_NS}/robot")
         if _STAND is not None:
             robot.init_state = robot.init_state.replace(
                 pos=tuple(float(x) for x in _STAND.base_pos),
