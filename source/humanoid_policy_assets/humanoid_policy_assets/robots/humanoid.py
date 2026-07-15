@@ -245,7 +245,7 @@ _CONTRACT_KD = {
     "leg_left_hip_roll_joint": 4.0, "leg_left_hip_yaw_joint": 0.5, "leg_left_hip_pitch_joint": 9.8,
     "leg_left_knee_pitch_joint": 2.45, "leg_left_ankle_pitch_joint": 2.0, "leg_left_ankle_roll_joint": 4.0,
     "leg_right_hip_roll_joint": 4.0, "leg_right_hip_yaw_joint": 1.0, "leg_right_hip_pitch_joint": 9.8,
-    "leg_right_knee_pitch_joint": 1.22, "leg_right_ankle_pitch_joint": 0.25, "leg_right_ankle_roll_joint": 2.0,
+    "leg_right_knee_pitch_joint": 1.22, "leg_right_ankle_pitch_joint": 0.5, "leg_right_ankle_roll_joint": 2.0,
 }
 _CONTRACT_EFFORT = {
     "leg_left_hip_roll_joint": 6.0, "leg_left_hip_yaw_joint": 12.0, "leg_left_hip_pitch_joint": 9.5,

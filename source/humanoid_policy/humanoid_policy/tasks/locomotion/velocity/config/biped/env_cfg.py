@@ -19,6 +19,30 @@ from humanoid_policy import pose_lib
 # default standing pose if the pose library is unavailable.
 _STAND = pose_lib.load_library(pose_lib.DEFAULT_LIBRARY_PATH).get("stand")
 
+# --- Action bound (guardrail) ---------------------------------------------------------------
+# On hardware the walk policy diverged: raw actions grew to ~10 -> 149-deg target offsets, joints
+# slammed the position limits and thrashed at 12 rad/s (see docs/walk-policy-divergence-report.md).
+# Clip the RAW action to +/-_ACTION_RAW_LIMIT so the fed-back `prev_action` term cannot explode.
+# Isaac Lab's JointAction `clip` acts on the PROCESSED target (raw*scale + default_pose), so we
+# build a per-joint clip centered on the stand pose: [stand_j - R*scale, stand_j + R*scale], which
+# is exactly equivalent to clipping the raw action to +/-R. The deploy exporter (scripts/rsl_rl/
+# play.py) recovers the same R from this clip, so train and deploy bound identically. Kept generous
+# so it does NOT distort a normal gait (a swing knee needs ~0.7 rad offset ~= raw 2.8); it only
+# stops the catastrophic runaway.
+_ACTION_SCALE = 0.25
+_ACTION_RAW_LIMIT = 4.0  # max |raw action| -> +/-1.0 rad (57 deg) target offset from the stand pose
+_ACTION_CLIP = (
+    {j: (v - _ACTION_RAW_LIMIT * _ACTION_SCALE, v + _ACTION_RAW_LIMIT * _ACTION_SCALE)
+     for j, v in _STAND.joint_pos.items()}
+    if _STAND is not None else None
+)
+
+# Nominal standing base height (flat-ground world z), same convention as the standup task. Used to
+# terminate an episode when the base collapses well below standing (guards against the policy
+# learning to thrash/squat instead of walk). None -> termination inert (height unknown).
+_STAND_BASE_HEIGHT = float(_STAND.base_pos[2]) if _STAND is not None else None
+_MIN_BASE_HEIGHT = (_STAND_BASE_HEIGHT - 0.15) if _STAND_BASE_HEIGHT is not None else -10.0
+
 
 ##
 # MDP settings
@@ -101,9 +125,10 @@ class ActionsCfg:
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=HUMANOID_LEG_JOINTS,
-        scale=0.25,
+        scale=_ACTION_SCALE,
         preserve_order=True,
         use_default_offset=True,
+        clip=_ACTION_CLIP,
     )
 
 
@@ -147,9 +172,21 @@ class RewardsCfg:
     )
 
     # joint motion smoothness
+    # action_rate/action_l2/dof_vel_l2 raised/added to suppress the high-frequency, large-amplitude
+    # action sequences seen on hardware (docs/walk-policy-divergence-report.md §4B). action_l2 keeps
+    # the raw output near 0 (complements the action clip); dof_vel_l2 penalizes the 12 rad/s thrash.
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
+        weight=-0.05,
+    )
+    action_l2 = RewTerm(
+        func=mdp.action_l2,
         weight=-0.01,
+    )
+    dof_vel_l2 = RewTerm(
+        func=mdp.joint_vel_l2,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
+        weight=-2.5e-4,
     )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
@@ -222,6 +259,12 @@ class TerminationsCfg:
     base_orientation = DoneTerm(
         func=mdp.bad_orientation,
         params={"limit_angle": 0.78, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
+    )
+    # End the episode if the base collapses ~15 cm below standing, so the policy is penalized for
+    # sinking/thrashing instead of walking (the runaway on hardware pinned joints at their limits).
+    base_height = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": _MIN_BASE_HEIGHT, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
     )
 
 

@@ -158,6 +158,16 @@ def main():
     match_expr_list = {expr: None for expr in env_cfg.actions.joint_pos.joint_names}
     action_indices, _, _ = string_utils.resolve_matching_names_values(match_expr_list, joint_names, preserve_order=True)
 
+    # Deploy must clip the RAW action to the same bound trained against. The training clip lives on
+    # the action term in PROCESSED space (per-joint: default_j +/- R*scale); recover R so deploy and
+    # train bound identically. No clip -> unbounded (legacy behavior).
+    _action_clip = env_cfg.actions.joint_pos.clip
+    if _action_clip:
+        _lo, _hi = next(iter(_action_clip.values()))
+        action_raw_limit = round((_hi - _lo) / 2.0 / env_cfg.actions.joint_pos.scale, 6)
+    else:
+        action_raw_limit = 10000
+
     deploy_config = {
         # === Policy configurations ===
         "policy_checkpoint_path": f"{export_model_dir}/policy.onnx",
@@ -197,8 +207,8 @@ def main():
         "num_actions": env.action_space.shape[-1],
         "action_scale": env_cfg.actions.joint_pos.scale,
         "action_indices": action_indices,
-        "action_limit_lower": -10000,
-        "action_limit_upper": 10000,
+        "action_limit_lower": -action_raw_limit,
+        "action_limit_upper": action_raw_limit,
     }
     if not os.path.exists("configs"):
         os.makedirs("configs")
