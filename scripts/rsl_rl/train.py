@@ -11,6 +11,7 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 import variants  # isort: skip
 import profiles  # isort: skip
+import plateau  # isort: skip
 
 
 # add argparse arguments
@@ -26,6 +27,8 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 variants.add_variant_arg(parser)
 # append training-scale profile argument (--profile full|fast)
 profiles.add_profile_arg(parser)
+# append plateau-watcher arguments (--plateau: best-ckpt + early stop)
+plateau.add_plateau_args(parser)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -152,8 +155,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # migrate deprecated config fields for the installed rsl_rl version
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, _pkg_version("rsl-rl-lib"))
 
-    # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # create runner from rsl-rl (PlateauRunner adds best-ckpt tracking + early stop when --plateau is set)
+    stopper = plateau.build_stopper(args_cli)
+    runner_cls = plateau.PlateauRunner if stopper is not None else OnPolicyRunner
+    runner = runner_cls(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    if stopper is not None:
+        runner.configure_plateau(stopper)
+        print(
+            f"[INFO] plateau watcher on: metric={stopper.metric}, patience={stopper.patience}, "
+            f"min_delta={stopper.min_delta}, warmup={stopper.warmup}"
+        )
     # compile actor-critic for faster inference on Blackwell GPU (RTX 5080)
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True

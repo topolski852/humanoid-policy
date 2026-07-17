@@ -3,11 +3,15 @@
 Selected with ``--profile``. Explicit ``--num_envs`` / ``--max_iterations`` always win over the
 profile. Independent of ``--variant`` (any variant can run at either scale).
 
-- ``full``: the tuned RTX-5080 setup (16384 envs). High-fidelity run; uses each task's own
-  ``max_iterations`` default. ~3.5 h wall time for the biped (~30 min IsaacSim startup + training).
-- ``fast``: the original 4096-env scale for quick dev iterations, targeted to finish **sub-3 h**.
-  With ~30 min fixed startup that leaves ~2.5 h of training; FAST_MAX_ITERATIONS is sized for that
-  but is hardware/task dependent — watch the reported sec/iter on the first run and tune it here.
+- ``full``: the tuned RTX-5080 setup (16384 envs, 64-step rollout). High-fidelity run.
+  16384 x 64 x 6000 = 6.29B samples. The 6000 here is a hardcoded ceiling, NOT the task's own
+  ``max_iterations`` default (the biped cfg default is 750, used only when no --profile is given).
+  For a truly "maxed" run, raise --max_iterations and pair it with --plateau so training stops at
+  the real reward plateau and always keeps model_best.pt (guards against post-peak degradation).
+  IsaacSim startup is ~2 min on this PC; training dominates wall time.
+- ``fast``: the original 4096-env scale for quick dev iterations (the Berkeley reference scale),
+  targeted to finish well under 3 h. FAST_MAX_ITERATIONS is sized for that but is hardware/task
+  dependent — watch the reported sec/iter on the first run and tune it here.
 """
 
 # Quick-run iteration budget. 4096 envs x 24 steps x 6000 iters = 590M samples (~reference legs
@@ -18,9 +22,9 @@ FAST_MAX_ITERATIONS = 6000
 PROFILES = {
     "full": {
         "num_envs": 16384,
-        "num_steps_per_env": 48,
+        "num_steps_per_env": 64,
         "num_mini_batches": 8,
-        "max_iterations": None,  # use the task's agent-cfg default
+        "max_iterations": 6000,
     },
     "fast": {
         "num_envs": 4096,

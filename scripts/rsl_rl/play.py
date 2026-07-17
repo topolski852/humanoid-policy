@@ -96,7 +96,13 @@ def main():
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    # Prefer the plateau watcher's peak checkpoint (model_best.pt) over the last numbered one, unless the
+    # user pinned an explicit --checkpoint. Guards against exporting a policy that degraded after its peak.
+    # preferred_checkpoint is used only if it matches; otherwise resolution falls back to the latest model.
+    preferred = None if args_cli.checkpoint is not None else "model_best.pt"
+    resume_path = get_checkpoint_path(
+        log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint, preferred_checkpoint=preferred
+    )
     log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
