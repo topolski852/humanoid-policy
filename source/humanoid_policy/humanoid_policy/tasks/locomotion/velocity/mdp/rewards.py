@@ -11,6 +11,19 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def base_lin_accel_xy_l2(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize horizontal base linear acceleration for a SMOOTH walk.
+
+    Uses the root body's world-frame linear acceleration (Isaac Lab ``body_lin_acc_w``,
+    body index 0). Squaring the x/y components discourages jerky base motion — i.e.
+    "penalize fast IMU changes in X/Y" — so the gait stays smooth rather than stompy.
+    """
+    asset = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.body_lin_acc_w.torch[:, 0, :2]), dim=1)
+
+
 def feet_air_time(
     env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
 ) -> torch.Tensor:

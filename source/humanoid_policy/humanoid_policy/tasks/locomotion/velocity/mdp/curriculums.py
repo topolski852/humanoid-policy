@@ -48,3 +48,34 @@ def terrain_levels_vel(
     terrain.update_env_origins(env_ids, move_up, move_down)
     # return the mean terrain level
     return torch.mean(terrain.terrain_levels.float())
+
+
+def command_forward_levels(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    command_name: str = "base_velocity",
+    fwd_min: float = 0.3,
+    start_max: float = 0.4,
+    end_max: float = 1.0,
+    num_steps: int = 48000,
+) -> float:
+    """Ramp the forward-command MAX from ``start_max`` to ``end_max`` over training.
+
+    The policy starts by only having to track a slow forward walk (a gentle exit from
+    the "stand still" reward basin) and faces the full commanded speed once it has
+    learned to move. Mutates the LIVE command ranges in place — the velocity command
+    re-reads ``cfg.ranges.lin_vel_x`` on every resample, so later resamples pick up the
+    wider range. The lower bound stays at ``fwd_min`` so the robot is always commanded
+    forward (never to stand).
+
+    Args:
+        num_steps: env steps over which the max ramps ``start_max`` -> ``end_max``.
+
+    Returns:
+        The current forward-command max (logged as ``Curriculum/command_forward_levels``).
+    """
+    term = env.command_manager.get_term(command_name)
+    frac = min(1.0, float(env.common_step_counter) / float(max(1, num_steps)))
+    new_max = start_max + frac * (end_max - start_max)
+    term.cfg.ranges.lin_vel_x = (fwd_min, new_max)
+    return new_max

@@ -37,3 +37,8 @@ _isaac_sim*
 _repo
 _build
 .lastformat
+
+# eureka search artifacts (belong in eureka/ or logs/, not committed)
+/eureka_best.json
+/eureka_history.jsonl
+/*.log

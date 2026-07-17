@@ -19,6 +19,9 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--cmd_vx", type=float, default=None,
+                    help="[inspection] force all envs to a fixed forward velocity command (m/s); "
+                         "overrides the random ±0.5 m/s sampling so the gait is actually visible.")
 # append training-variant argument (--variant resolves to a gym task id, overriding --task)
 variants.add_variant_arg(parser)
 # append RSL-RL cli arguments
@@ -73,6 +76,20 @@ def main():
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
+    # [inspection only] force a fixed forward walk command so the gait is visible. Default sampling
+    # gives slow, often-tiny random commands (±0.5 m/s, resampled only every 10 s) -> mostly small
+    # motion. This just narrows the command ranges; no policy/reward change.
+    if args_cli.cmd_vx is not None:
+        r = env_cfg.commands.base_velocity.ranges
+        r.lin_vel_x = (args_cli.cmd_vx, args_cli.cmd_vx)
+        r.lin_vel_y = (0.0, 0.0)
+        r.ang_vel_z = (0.0, 0.0)
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        # the training command curriculum ramps/overwrites lin_vel_x every step; disable it
+        # here so the fixed inspection command actually holds.
+        if getattr(env_cfg, "curriculum", None) is not None and hasattr(env_cfg.curriculum, "command_forward"):
+            env_cfg.curriculum.command_forward = None
+        print(f"[INFO] cmd_vx override: all envs commanded forward at {args_cli.cmd_vx} m/s")
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     # specify directory for logging experiments

@@ -42,9 +42,11 @@ def _print_candidate(cand: Candidate, elapsed: float) -> None:
     c = cand.components
     if "_raw" in c:
         r = c["_raw"]
-        print(f"  {cand.name:18s} fitness={cand.fitness:6.4f}  "
-              f"success={r['success_rate']:.2f} fall={r['fall_rate']:.2f} "
-              f"err_xy={r['err_vel_xy']:.3f} ep_len={r['mean_ep_len']:.0f}/{r['max_ep_steps']}  "
+        print(f"  {cand.name:18s} fitness={cand.fitness:6.4f} "
+              f"gate={c.get('walk_gate', 0.0):.2f} track={c.get('tracked_ratio', 0.0):.2f} "
+              f"(v={r.get('tracked_speed', 0.0):.2f}/{r.get('commanded_speed', 0.0):.2f})  "
+              f"fall={r['fall_rate']:.2f} err_xy={r['err_vel_xy']:.3f} "
+              f"ep_len={r['mean_ep_len']:.0f}/{r['max_ep_steps']}  "
               f"[{cand.stopped_reason}, {_fmt_hms(elapsed)}]")
     else:
         print(f"  {cand.name:18s} fitness={cand.fitness:6.4f}  ({c.get('error','?')})")
@@ -114,15 +116,24 @@ def main() -> None:
           f"backend={cfg.backend}   {cfg.iterations} gens x {cfg.candidates} candidates "
           f"(inner cap {cfg.max_iterations} iters)")
 
-    # Generation 0: the shipped default weights + random explorers.
-    print("Generation 0: default weights + random explorers")
-    gen0 = [Candidate(name="default", weights=dict(C.DEFAULT_WEIGHTS))]
-    gen0 += propose_weights_local([], cfg.candidates - 1, rng)
-    for i, cand in enumerate(gen0):
-        _evaluate(cand, cfg, 0, i)
-        history.append(cand)
+    # Generation 0: either seed from a known-good walker (skip the retrain) or train the
+    # shipped default weights + random explorers.
+    seed = _seed_from_best(cfg) if cfg.seed_best else None
+    if seed is not None:
+        print(f"Generation 0: SEEDED from {seed.name} fitness={seed.fitness:.4f} "
+              f"(re-graded from {os.path.basename(seed.run_dir)}, no retrain)")
+        history.append(seed)
         if log_fp:
-            _log(log_fp, 0, cand)
+            _log(log_fp, 0, seed)
+    else:
+        print("Generation 0: default weights + random explorers")
+        gen0 = [Candidate(name="default", weights=dict(C.DEFAULT_WEIGHTS))]
+        gen0 += propose_weights_local([], cfg.candidates - 1, rng, gen=0)
+        for i, cand in enumerate(gen0):
+            _evaluate(cand, cfg, 0, i)
+            history.append(cand)
+            if log_fp:
+                _log(log_fp, 0, cand)
     best = max(history, key=lambda c: c.fitness)
     _write_best(cfg.best_out, best)
 
@@ -130,7 +141,7 @@ def main() -> None:
     for gen in range(1, cfg.iterations + 1):
         print(f"Generation {gen}: evolving from best fitness {best.fitness:.4f}")
         gen_best = best.fitness
-        for i, cand in enumerate(propose_weights_local(history, cfg.candidates, rng)):
+        for i, cand in enumerate(propose_weights_local(history, cfg.candidates, rng, gen=gen)):
             _evaluate(cand, cfg, gen, i)
             history.append(cand)
             if log_fp:
@@ -154,6 +165,31 @@ def main() -> None:
     print(f"BEST: {best.name}  fitness={best.fitness:.4f}")
     print(f"  reproduce with:\n    {C.hydra_override_str(best.weights)}")
     print(f"wrote {cfg.best_out}" + (f" and {cfg.log}" if cfg.log else ""))
+
+
+def _seed_from_best(cfg: C.SearchConfig) -> Candidate | None:
+    """Load the saved best (cfg.best_out) as a pre-scored gen-0 Candidate, RE-GRADED with
+    the current fitness by re-reading its TB run dir — so the search can evolve from a
+    known-good walker without retraining it. Returns None if unavailable/incomplete."""
+    path = cfg.best_out
+    if not os.path.exists(path):
+        print(f"[seed] {path} not found — falling back to a fresh gen 0.")
+        return None
+    try:
+        b = json.load(open(path))
+    except Exception as e:
+        print(f"[seed] could not read {path}: {e} — fresh gen 0.")
+        return None
+    run_dir, weights = b.get("run_dir"), b.get("weights")
+    if not run_dir or not os.path.isdir(run_dir) or not weights:
+        print(f"[seed] {path} missing run_dir/weights (run_dir={run_dir!r}) — fresh gen 0.")
+        return None
+    fit, comp = E.score(run_dir)                      # re-grade with the CURRENT fitness
+    if fit == float("-inf"):
+        print(f"[seed] no TB data in {run_dir} — fresh gen 0.")
+        return None
+    return Candidate(name=b.get("name", "seed"), weights=dict(weights), fitness=fit,
+                     components=comp, run_dir=run_dir, stopped_reason="seeded")
 
 
 def _gen_best_curve(history: list[Candidate], cfg: C.SearchConfig) -> list[float]:

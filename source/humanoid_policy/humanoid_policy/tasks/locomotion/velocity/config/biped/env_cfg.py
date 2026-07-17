@@ -52,7 +52,14 @@ _MIN_BASE_HEIGHT = (_STAND_BASE_HEIGHT - 0.15) if _STAND_BASE_HEIGHT is not None
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    base_velocity = mdp.UniformVelocityCommandCfg(
+    # Berkeley-Humanoid-Lite command: OMNIDIRECTIONAL velocity tracking (walk any
+    # direction) — the actual end goal, and the setup Berkeley proved walks. We keep the
+    # `WalkMetricsVelocityCommandCfg` subclass ONLY to log readback metrics (tracked_speed /
+    # commanded_speed / base_accel_rms / rocking_rms) for the gated Eureka fitness; every
+    # command FIELD below matches Berkeley's. The Eureka gate is on tracked_speed (velocity
+    # in the commanded direction), which is direction-agnostic — a statue -> ~0, a tracker
+    # -> ~1 — so the lenient success metric is no longer relied on for grading.
+    base_velocity = mdp.WalkMetricsVelocityCommandCfg(
         resampling_time_range=(10.0, 10.0),
         debug_vis=True,
         asset_name="robot",
@@ -134,78 +141,93 @@ class ActionsCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP."""
+    """Reward terms for the MDP.
+
+    Weights are the **g2c3** reward from the Eureka search (fitness 0.6926) — the best
+    stable-walk tuning found on top of the Berkeley-Humanoid-Lite base (which we reverted
+    to after the earlier motion-suppression penalty stack collapsed the policy into
+    standing; see docs/ + eureka/). Values are g2c3 rounded to ~4 sig figs (the extra
+    digits were within seed noise). The three hardware-safety penalties Berkeley/g2c3
+    leave at 0 (base_accel_xy_l2, action_l2, dof_vel_l2) are kept defined-but-off so they
+    can be re-introduced for sim->real without re-adding the term.
+    """
 
     # === Reward for task-space performance ===
     # command tracking performance
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         params={"command_name": "base_velocity", "std": 0.25},
-        weight=2.0,
+        weight=1.787,
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
         params={"command_name": "base_velocity", "std": 0.25},
-        weight=1.0,
+        weight=1.042,
     )
 
     # === Reward for basic behaviors ===
     # termination penalty
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-10.0,
+        weight=-9.588,
     )
 
     # base motion smoothness
     lin_vel_z_l2 = RewTerm(
         func=mdp.lin_vel_z_l2,
-        weight=-0.1,
+        weight=-0.1081,
     )
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.05,
+        weight=-0.03924,
+    )
+    # smooth walk: penalize fast horizontal base linear acceleration ("fast IMU X/Y changes").
+    # OFF in g2c3 (Berkeley has no such term); a small negative weight here is the natural
+    # "small bump to stability/smoothness" knob for a full run.
+    base_accel_xy_l2 = RewTerm(
+        func=mdp.base_lin_accel_xy_l2,
+        weight=0.0,
     )
     # ensure the robot is standing upright
     flat_orientation_l2 = RewTerm(
         func=mdp.flat_orientation_l2,
-        weight=-2.0,
+        weight=-2.183,
     )
 
     # joint motion smoothness
-    # action_rate/action_l2/dof_vel_l2 raised/added to suppress the high-frequency, large-amplitude
-    # action sequences seen on hardware (docs/walk-policy-divergence-report.md §4B). action_l2 keeps
-    # the raw output near 0 (complements the action clip); dof_vel_l2 penalizes the 12 rad/s thrash.
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.05,
+        weight=-0.014,
     )
+    # action_l2 / dof_vel_l2: hardware-safety penalties (docs/walk-policy-divergence-report.md
+    # §4B) that suppress high-frequency, large-amplitude actions. Berkeley/g2c3 leave them OFF
+    # (they had over-damped the gait into standing); re-introduce with small weights for sim->real.
     action_l2 = RewTerm(
         func=mdp.action_l2,
-        weight=-0.01,
+        weight=0.0,
     )
     dof_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
-        weight=-2.5e-4,
+        weight=0.0,
     )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
-        weight=-2.0e-3,
+        weight=-0.001783,
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
-        weight=-1.0e-6,
+        weight=-1.027e-6,
     )
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-1.0,
+        weight=-0.8446,
     )
 
     # === Reward for encouraging behaviors ===
-    # encourage robot to take steps (small bump 1.0 -> 1.15 to reduce the shuffly, short-step gait;
-    # kept small because this legs-only biped has no arms to balance a longer stride)
+    # encourage robot to take steps
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         params={
@@ -213,7 +235,7 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
             "threshold": 0.4,
         },
-        weight=1.15,
+        weight=1.199,
     )
     # penalize feet sliding on the ground to exploit physics sim inaccuracies
     feet_slide = RewTerm(
@@ -222,7 +244,7 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
         },
-        weight=-0.1,
+        weight=-0.07207,
     )
 
     # penalize undesired contacts (falls, and -- with self-collision enabled -- leg-vs-leg contact)
@@ -232,19 +254,19 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip_.*", ".*_knee_.*"]),
             "threshold": 1.0,
         },
-        weight=-1.0,
+        weight=-1.298,
     )
 
     # penalize deviation from default of the joints that are not essential for locomotion
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint", ".*_hip_roll_joint"])},
-        weight=-0.2,
+        weight=-0.1607,
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_roll_joint"])},
-        weight=-0.2,
+        weight=-0.1707,
     )
 
 
@@ -362,6 +384,9 @@ class EventsCfg:
 class CurriculumsCfg:
     """Curriculum terms for the MDP."""
 
+    # No curriculum — Berkeley trains omnidirectional walking with no command/terrain
+    # curriculum and it walks. (A forward-command curriculum lived here previously; removed
+    # with the switch back to Berkeley's symmetric command.)
     pass
 
 

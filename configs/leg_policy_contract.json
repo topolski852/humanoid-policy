@@ -1,7 +1,7 @@
 {
   "_meta": {
     "source": "humanoid-policy trainer export (scripts/rsl_rl/play.py)",
-    "task": "Standup-Humanoid-Policy-Biped-v0",
+    "task": "Walk-Humanoid-Policy-Biped-v0",
     "note": "Sim-side contract for humanoid-control; joint_order/obs/action match leg_policy_params.json."
   },
   "canonical_joint_order": [
@@ -47,7 +47,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -0.17453299462795258,
       "position_limit_upper": 1.5707999467849731,
-      "default_pose": 0.029593753814697265
+      "default_pose": 0.10999999940395355
     },
     {
       "index": 1,
@@ -57,7 +57,7 @@
       "effort_limit": 12.0,
       "position_limit_lower": -0.9817479252815247,
       "position_limit_upper": 0.5890489220619202,
-      "default_pose": 0.0038009449839591977
+      "default_pose": 0.0
     },
     {
       "index": 2,
@@ -67,7 +67,7 @@
       "effort_limit": 9.5,
       "position_limit_lower": -1.8980498313903809,
       "position_limit_upper": 0.9817479252815247,
-      "default_pose": -1.8880527578749846
+      "default_pose": -0.23999999463558197
     },
     {
       "index": 3,
@@ -77,7 +77,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -2.771119651020365e-13,
       "position_limit_upper": 2.443459987640381,
-      "default_pose": 2.4334609527920614
+      "default_pose": 0.8299999833106995
     },
     {
       "index": 4,
@@ -87,7 +87,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -0.7853979468345642,
       "position_limit_upper": 0.7853979468345642,
-      "default_pose": -0.7753981633974483
+      "default_pose": -0.5600000023841858
     },
     {
       "index": 5,
@@ -97,7 +97,7 @@
       "effort_limit": 7.0,
       "position_limit_lower": -0.2617989778518677,
       "position_limit_upper": 0.2617989778518677,
-      "default_pose": 0.013601303100585938
+      "default_pose": -0.07000000029802322
     },
     {
       "index": 6,
@@ -107,7 +107,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -1.5707999467849731,
       "position_limit_upper": 0.17453299462795258,
-      "default_pose": 0.029593753814697265
+      "default_pose": -0.10999999940395355
     },
     {
       "index": 7,
@@ -117,7 +117,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -0.5890489220619202,
       "position_limit_upper": 0.9817479252815247,
-      "default_pose": 0.0038009449839591977
+      "default_pose": -0.0
     },
     {
       "index": 8,
@@ -127,7 +127,7 @@
       "effort_limit": 9.5,
       "position_limit_lower": -1.8980498313903809,
       "position_limit_upper": 0.9817479252815247,
-      "default_pose": -1.8880527578749846
+      "default_pose": -0.23999999463558197
     },
     {
       "index": 9,
@@ -137,7 +137,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -1.0835799082011335e-13,
       "position_limit_upper": 2.443459987640381,
-      "default_pose": 2.4334609527920614
+      "default_pose": 0.8299999833106995
     },
     {
       "index": 10,
@@ -147,7 +147,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -0.7853979468345642,
       "position_limit_upper": 0.7853979468345642,
-      "default_pose": -0.7753981633974483
+      "default_pose": -0.5600000023841858
     },
     {
       "index": 11,
@@ -157,7 +157,7 @@
       "effort_limit": 6.0,
       "position_limit_lower": -0.2617989778518677,
       "position_limit_upper": 0.2617989778518677,
-      "default_pose": 0.013601303100585938
+      "default_pose": 0.07000000029802322
     }
   ]
 }

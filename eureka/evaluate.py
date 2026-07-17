@@ -41,21 +41,41 @@ def score(run_dir: str) -> tuple[float, dict]:
     fall = float(last_scalar(sc, C.TAG_TERM_ORIENT, 1.0))
     collapse = float(last_scalar(sc, C.TAG_TERM_HEIGHT, 1.0))
     ep_len = float(last_scalar(sc, C.TAG_MEAN_EP_LEN, 0.0))
+    # readback metrics (default to "not walking" so pre-metrics runs gate to ~0)
+    tracked = float(last_scalar(sc, C.TAG_TRACKED_SPEED, 0.0))
+    cmd_speed = float(last_scalar(sc, C.TAG_CMD_SPEED, 0.0))
+    fwd_speed = float(last_scalar(sc, C.TAG_FWD_SPEED, 0.0))
+    accel_rms = float(last_scalar(sc, C.TAG_ACCEL_RMS, 1e3))
+    rock_rms = float(last_scalar(sc, C.TAG_ROCK_RMS, 1e3))
     max_steps = _max_ep_steps(run_dir)
 
+    # quality: how good the walk is *once it is walking* (weight-invariant [0,1] parts)
     comp = {
-        "success":   max(0.0, min(1.0, success)),
-        "upright":   max(0.0, 1.0 - fall),
-        "survive":   max(0.0, min(1.0, ep_len / max_steps)),
-        "track_xy":  math.exp(-err_xy / C.TRACK_SCALE),
-        "track_yaw": math.exp(-err_yaw / C.TRACK_SCALE),
-        "standing":  max(0.0, 1.0 - collapse),
+        "track_xy":   math.exp(-err_xy / C.TRACK_SCALE),
+        "track_yaw":  math.exp(-err_yaw / C.TRACK_SCALE),
+        "upright":    max(0.0, 1.0 - fall),
+        "stability":  math.exp(-max(0.0, rock_rms) / C.ROCK_RMS_SCALE),
+        "smoothness": math.exp(-max(0.0, accel_rms) / C.ACCEL_RMS_SCALE),
+        "survive":    max(0.0, min(1.0, ep_len / max_steps)),
     }
-    fitness = sum(C.FITNESS_WEIGHTS[k] * comp[k] for k in C.FITNESS_WEIGHTS)
+    quality = sum(C.QUALITY_WEIGHTS[k] * comp[k] for k in C.QUALITY_WEIGHTS)
+
+    # walk_gate: SATURATING gate on tracked_ratio (fraction of commanded speed achieved in
+    # the commanded direction). Omnidirectional; ~0 for a statue, 1.0 once it genuinely
+    # locomotes (>= GATE_RATIO). Saturating => among walkers gate~=1 so quality decides.
+    tracked_ratio = tracked / cmd_speed if cmd_speed > 1e-3 else 0.0
+    walk_gate = max(0.0, min(1.0, tracked_ratio / C.GATE_RATIO))
+    fitness = walk_gate * quality
+
+    comp["quality"] = round(quality, 4)
+    comp["walk_gate"] = round(walk_gate, 4)
+    comp["tracked_ratio"] = round(tracked_ratio, 4)
     comp["_raw"] = {
         "success_rate": round(success, 4), "err_vel_xy": round(err_xy, 4),
         "err_vel_yaw": round(err_yaw, 4), "fall_rate": round(fall, 4),
         "collapse_rate": round(collapse, 4), "mean_ep_len": round(ep_len, 1),
-        "max_ep_steps": max_steps,
+        "max_ep_steps": max_steps, "tracked_speed": round(tracked, 4),
+        "commanded_speed": round(cmd_speed, 4), "forward_speed": round(fwd_speed, 4),
+        "accel_rms": round(accel_rms, 4), "rocking_rms": round(rock_rms, 4),
     }
     return float(fitness), comp
