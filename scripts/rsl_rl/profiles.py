@@ -21,7 +21,7 @@ FAST_MAX_ITERATIONS = 6000
 
 PROFILES = {
     "full": {
-        "num_envs": 16384,
+        "num_envs": 24576,
         "num_steps_per_env": 64,
         "num_mini_batches": 8,
         "max_iterations": 6000,
