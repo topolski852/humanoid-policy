@@ -68,9 +68,12 @@ class CommandsCfg:
         rel_standing_envs=0.02,
         rel_heading_envs=1.0,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 0.5),
-            lin_vel_y=(-0.25, 0.25),
-            ang_vel_z=(-1.0, 1.0),
+            # Harder command envelope (balanced) so the full-profile policy is robust across
+            # the real operating range, not just a gentle 0.3 m/s forward walk. Widened from
+            # Berkeley's ±0.5 / ±0.25 / ±1.0. Paired with interval pushes below.
+            lin_vel_x=(-0.8, 0.8),
+            lin_vel_y=(-0.4, 0.4),
+            ang_vel_z=(-1.2, 1.2),
             heading=(-math.pi, math.pi),
         ),
     )
@@ -385,21 +388,23 @@ class EventsCfg:
         func=mdp.apply_external_force_torque,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base"),
-            "force_range": (-2.0, 2.0),
-            "torque_range": (-2.0, 2.0),
-            # "force_range": (-3.0, 3.0),
-            # "torque_range": (-3.0, 3.0),
+            # Stronger reset perturbation (balanced robustness pass): ±3 N/N·m (was ±2).
+            "force_range": (-3.0, 3.0),
+            "torque_range": (-3.0, 3.0),
         },
         mode="reset",
     )
 
     # === Interval behaviors ===
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(10.0, 15.0),
-    #     params={"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}},
-    # )
+    # Mid-episode shove (balanced robustness pass): every 10-15 s, apply a ±0.8 m/s velocity
+    # kick to the base so the policy learns to recover from disturbances (the on-robot failure
+    # mode). Enabled for the harder-command training; drop the weight/range to soften.
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(10.0, 15.0),
+        params={"velocity_range": {"x": (-0.8, 0.8), "y": (-0.8, 0.8)}},
+    )
 
 
 @configclass
