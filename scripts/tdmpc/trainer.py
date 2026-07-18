@@ -48,8 +48,10 @@ class TdmpcTrainer:
             # --- act ---
             if total < cfg.seed_steps:
                 agent_action = 2.0 * torch.rand(self.N, env.num_actions, device=env.device) - 1.0
+            elif cfg.plan_collection:
+                agent_action = agent.plan_batch(obs_p, eval_mode=False)   # proper TD-MPC2 (MPPI collection)
             else:
-                agent_action = agent.act_pi(obs_p, eval_mode=False)
+                agent_action = agent.act_pi(obs_p, eval_mode=False)       # fast policy-prior collection
             env_action = agent_action * self.act_scale
 
             # --- step + store (store the NORMALIZED action + pre-step policy obs) ---

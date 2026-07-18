@@ -27,6 +27,7 @@ class TdmpcAgentCfg:
     seed_steps: int = 5_000             # env-steps of random actions before learning
     updates_per_step: int = 1           # gradient updates per env-step
     max_env_steps: int = 3_000_000      # total env-steps budget (per-env count × num_envs)
+    plan_collection: bool = False       # collect with the MPPI planner (proper TD-MPC2) vs the fast prior
 
     # --- model size (START SMALL) ---------------------------------------------
     latent_dim: int = 256

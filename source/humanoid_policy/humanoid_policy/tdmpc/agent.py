@@ -109,6 +109,53 @@ class TDMPC2(torch.nn.Module):
         self._prev_mean.copy_(mean)
         return a.clamp(-1, 1)
 
+    @torch.no_grad()
+    def plan_batch(self, obs, eval_mode=True):
+        """Vectorized MPPI over N envs at once. obs (N, obs_dim) -> action (N, action_dim) in [-1,1].
+
+        Same MPPI as `plan` but with an explicit env batch dim N (flattened into the sample batch for
+        the model forward passes), so it runs the planner for all collection/eval envs in parallel.
+        """
+        cfg, dev = self.cfg, self.device
+        N = obs.shape[0]
+        H, A, S, Np, lat = cfg.horizon, cfg.action_dim, cfg.num_samples, cfg.num_pi_trajs, cfg.latent_dim
+        z0 = self.model.encode(obs)  # (N, lat)
+
+        pi_actions = torch.empty(H, N, Np, A, device=dev)
+        _z = z0.unsqueeze(1).expand(N, Np, lat).reshape(N * Np, lat)
+        for t in range(H - 1):
+            a_t, _ = self.model.pi(_z)
+            pi_actions[t] = a_t.view(N, Np, A)
+            _z = self.model.next(_z, a_t)
+        a_last, _ = self.model.pi(_z)
+        pi_actions[-1] = a_last.view(N, Np, A)
+
+        z = z0.unsqueeze(1).expand(N, S, lat).reshape(N * S, lat)  # (N*S, lat)
+        mean = torch.zeros(H, N, A, device=dev)
+        std = torch.full((H, N, A), cfg.max_std, device=dev)
+        actions = torch.empty(H, N, S, A, device=dev)
+        actions[:, :, :Np] = pi_actions
+
+        for _ in range(self.iterations):
+            r = torch.randn(H, N, S - Np, A, device=dev)
+            actions[:, :, Np:] = (mean.unsqueeze(2) + std.unsqueeze(2) * r).clamp(-1, 1)
+            value = self._estimate_value(z, actions.reshape(H, N * S, A)).squeeze(-1).view(N, S).nan_to_num(0)
+            elite_idx = torch.topk(value, cfg.num_elites, dim=1).indices          # (N, E)
+            ei = elite_idx.view(1, N, cfg.num_elites, 1).expand(H, N, cfg.num_elites, A)
+            elite_actions = torch.gather(actions, 2, ei)                          # (H, N, E, A)
+            elite_value = torch.gather(value, 1, elite_idx)                       # (N, E)
+            score = torch.exp(cfg.temperature * (elite_value - elite_value.max(1, keepdim=True).values))
+            score = score / (score.sum(1, keepdim=True) + 1e-9)                   # (N, E)
+            sc = score.view(1, N, cfg.num_elites, 1)
+            mean = (sc * elite_actions).sum(2) / (sc.sum(2) + 1e-9)               # (H, N, A)
+            std = ((sc * (elite_actions - mean.unsqueeze(2)) ** 2).sum(2) / (sc.sum(2) + 1e-9)).sqrt()
+            std = std.clamp(cfg.min_std, cfg.max_std)
+
+        a0 = mean[0]
+        if not eval_mode:
+            a0 = a0 + std[0] * torch.randn(N, A, device=dev)
+        return a0.clamp(-1, 1)
+
     # ---- learning -------------------------------------------------------------
     def update_pi(self, zs):
         action, info = self.model.pi(zs)

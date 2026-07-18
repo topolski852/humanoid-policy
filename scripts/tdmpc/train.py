@@ -25,6 +25,7 @@ parser.add_argument("--task", type=str, default=None, help="Gym task id (usually
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--max_env_steps", type=int, default=None, help="Total env-steps budget (override cfg).")
 parser.add_argument("--seed_steps", type=int, default=None, help="Random-action warmup env-steps (override cfg).")
+parser.add_argument("--plan_collection", action="store_true", help="Collect with the MPPI planner (proper TD-MPC2).")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -64,13 +65,16 @@ def main():
         agent_cfg.max_env_steps = args_cli.max_env_steps
     if args_cli.seed_steps is not None:
         agent_cfg.seed_steps = args_cli.seed_steps
+    if args_cli.plan_collection:
+        agent_cfg.plan_collection = True
 
     torch.manual_seed(args_cli.seed)
     device = args_cli.device or env_cfg.sim.device
     print(f"[tdmpc] task={args_cli.task}  plant=HUMANOID_ACTUATOR_MODEL={os.environ['HUMANOID_ACTUATOR_MODEL']}")
     print(f"[tdmpc] cfg: latent={agent_cfg.latent_dim} horizon={agent_cfg.horizon} num_envs={agent_cfg.num_envs} "
           f"max_env_steps={agent_cfg.max_env_steps} seed_steps={agent_cfg.seed_steps} "
-          f"priv={agent_cfg.use_privileged_critic} tdmpc2sq={agent_cfg.use_tdmpc2_square}")
+          f"plan_collection={agent_cfg.plan_collection} priv={agent_cfg.use_privileged_critic} "
+          f"tdmpc2sq={agent_cfg.use_tdmpc2_square}")
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     env = TdmpcVecEnv(env)
