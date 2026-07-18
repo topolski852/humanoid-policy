@@ -6,8 +6,13 @@
   <link name="base">
     <inertial>
       <origin xyz="-0.00461671 0.000372278 0.637874" rpy="0 0 0"/>
-      <mass value="3.16059"/>
-      <inertia ixx="0.0372453" ixy="-4.06133e-06" ixz="-0.000720627" iyy="0.0282653" iyz="-1.49369e-05" izz="0.0176468"/>
+      <!-- Mass corrected +1.267 kg (CAD 3.16059 -> measured 4.42983 kg) so the robot totals the
+           measured 12.61 kg (27.8 lb, legs+torso). The deficit is battery/compute/wiring, absent
+           from CAD; parked on the torso. Diagonal+products of inertia scaled x1.4016 (added mass
+           assumed distributed like the torso). Mirrors the override in usd/humanoid_biped.usd.
+           See configs/actuators/PROVENANCE.md. -->
+      <mass value="4.42983"/>
+      <inertia ixx="0.0522055" ixy="-5.69228e-06" ixz="-0.00101002" iyy="0.0396198" iyz="-2.09348e-05" izz="0.0247354"/>
     </inertial>
     <!-- Part base_parts -->
     <collision>
