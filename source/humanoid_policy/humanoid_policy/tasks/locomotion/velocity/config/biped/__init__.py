@@ -13,5 +13,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": env_cfg.HumanoidBipedEnvCfg,
         "rsl_rl_cfg_entry_point": agents.rsl_rl_ppo_cfg.HumanoidBipedPPORunnerCfg,
+        "tdmpc_cfg_entry_point": agents.tdmpc_cfg.HumanoidBipedTdmpcCfg,
     },
 )
