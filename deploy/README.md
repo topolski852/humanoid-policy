@@ -6,7 +6,7 @@ Exported policies for `humanoid-control` to load on the robot. Three policies ma
 | folder | policy | motion | trained from | checkpoint |
 |---|---|---|---|---|
 | `standup/` | squat → stand | rise to standing | `standup_biped/2026-07-08_23-43-42` | model_700 |
-| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-07-17_12-28-34` | model_best (iter 4593, peak) |
+| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-07-18_14-18-40` | model_best (iter 3087, peak) |
 | `squat/` | stand → squat | controlled descent to squat | `squat_biped/2026-07-09_17-11-40` | model_500 |
 
 Each folder contains:
