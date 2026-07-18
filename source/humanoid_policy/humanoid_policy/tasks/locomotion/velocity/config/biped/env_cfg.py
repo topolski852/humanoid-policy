@@ -334,6 +334,28 @@ class EventsCfg:
         },
         mode="startup",
     )
+    # === Actuator-model domain randomization (bench-validated motor models) ===============
+    # We have ONE bench unit of each motor type, so randomize AROUND the fitted nominals to
+    # cover per-joint 3D-printed variation. Latency DR (0.5-1.5x) is built into the actuator
+    # itself (per-reset random delay in [min_delay, max_delay]); here we add inertia + friction.
+    # Both are no-ops / harmless under the implicit baseline (HUMANOID_ACTUATOR_MODEL=0).
+    randomize_leg_armature = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS),
+            "armature_distribution_params": (0.8, 1.2),  # reflected motor+gearbox inertia +-20%
+            "operation": "scale",
+        },
+        mode="startup",
+    )
+    randomize_joint_friction = EventTerm(
+        func=mdp.randomize_stickslip_friction,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS),
+            "friction_distribution_params": (0.7, 1.3),  # stick-slip coulomb/breakaway/viscous +-30%
+        },
+        mode="startup",
+    )
 
     # === Reset behaviors ===
     reset_base = EventTerm(

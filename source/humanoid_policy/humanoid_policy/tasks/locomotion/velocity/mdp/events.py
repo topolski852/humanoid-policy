@@ -47,6 +47,45 @@ def randomize_joint_default_pos(
         asset.data.default_joint_pos.torch[env_ids, joint_ids] = pos
 
 
+def randomize_stickslip_friction(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    friction_distribution_params: tuple[float, float] = (0.7, 1.3),
+    distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
+):
+    """Scale the stick-slip friction levels of the custom actuator model per env/joint.
+
+    Covers joint-to-joint 3D-printed spread: we have ONE bench unit of each motor type, so the
+    fitted coulomb/breakaway/viscous are nominals -- randomize +-30% (default) around them. The
+    three levels scale together by a SINGLE factor per (env, joint) since they share one physical
+    gearbox. Startup-only: these are plain tensors on the actuator (not PhysX solver params), so
+    we scale them in place.
+
+    Only actuators exposing the stick-slip attrs (``coulomb``) are touched; implicit-baseline runs
+    are a no-op.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+
+    for actuator in asset.actuators.values():
+        if not hasattr(actuator, "coulomb"):
+            continue
+        # one shared scale per (env, joint) across the actuator's joints
+        scale = _randomize_prop_by_op(
+            torch.ones_like(actuator.coulomb),
+            friction_distribution_params,
+            env_ids,
+            slice(None),
+            operation="scale",
+            distribution=distribution,
+        )
+        for attr in ("coulomb", "breakaway", "viscous"):
+            getattr(actuator, attr)[env_ids] *= scale[env_ids]
+
+
 def randomize_actuator_torque_constant(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,

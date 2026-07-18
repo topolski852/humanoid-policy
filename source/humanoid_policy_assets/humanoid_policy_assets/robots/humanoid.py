@@ -6,6 +6,8 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 
+from humanoid_policy_assets.actuators import StickSlipDelayedPDActuatorCfg, load_actuator_model
+
 ISAACLAB_ASSET_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
 
 HUMANOID_LEG_JOINTS = [
@@ -299,13 +301,35 @@ HUMANOID_BIPED_SQUAT_CFG = HUMANOID_BIPED_CFG.replace(
 firmware PD gains from the humanoid-control policy contract."""
 
 
-HUMANOID_BIPED_WALK_CFG = HUMANOID_BIPED_CFG.replace(
-    # Same real per-joint firmware PD gains as the squat cfg (the deployed ESC/contract gains,
-    # asymmetric, kp up to 68.4), but WITHOUT the squat init pose — the walk/velocity env sets
-    # its own standing init_state. Point the walk task at this so the policy trains on the real
-    # deployed plant instead of the uniform kp=20/kd=2 of HUMANOID_BIPED_CFG. REQUIRES RETRAINING
-    # + re-export of deploy/walk. Gains verified against humanoid-studio/configs/humanoid_lite.json.
-    actuators={
+##
+# WALK actuators — two builds behind a toggle so the modeled plant is reversible / A/B-able.
+#
+#  * IMPLICIT baseline: the original ImplicitActuatorCfg groups (PhysX PD, no friction, no
+#    latency, light armature 0.007/0.002). What the currently-deployed policy trained on.
+#  * MODELED plant: bench-validated actuator models (humanoid-tuner commit bd7c613). Adds the
+#    measured reflected inertia (armature), stick-slip joint friction, and command latency —
+#    closing the sim-to-real gap that made the deployed policy "freak out" on the robot.
+#
+# Select with _WALK_USE_ACTUATOR_MODEL (env var HUMANOID_ACTUATOR_MODEL=0 forces the baseline).
+# BOTH keep the exact policy<->robot contract: per-joint contract PD gains (kp/kd) and the real
+# per-joint effort limits (_CONTRACT_EFFORT). Only the sim plant differs.
+##
+
+# Physics step is 5 ms (sim.dt=0.005). Command latency is expressed in integer physics steps,
+# randomized per-reset in [min_delay, max_delay] (this IS the 0.5-1.5x latency DR). The 5 ms grid
+# can't hit the measured values exactly, so we bracket them: 7.2 ms (legs) -> 1-2 steps (5-10 ms);
+# 12 ms (ankles) -> 2-3 steps (10-15 ms). Measured latencies are from humanoid-tuner sim/isaac/
+# motor.py MotorSpec (NOT the fitted JSON's latency_s, which reads 0 — the gentle fit didn't excite it).
+_LEG_DELAY = (1, 2)
+_ANKLE_DELAY = (2, 3)
+
+_M6C12 = load_actuator_model("m6c12_pitch")    # legs: hip roll/yaw/pitch + knee
+_MAD5010 = load_actuator_model("mad5010_roll")  # ankles: ankle pitch/roll
+
+
+def _walk_actuators_implicit():
+    """Original walk plant: PhysX implicit PD, no friction/latency, light armature."""
+    return {
         "legs": ImplicitActuatorCfg(
             joint_names_expr=_LEG_GROUP,
             velocity_limit=10.0,
@@ -322,9 +346,63 @@ HUMANOID_BIPED_WALK_CFG = HUMANOID_BIPED_CFG.replace(
             damping=_subset(_CONTRACT_KD, _ANKLE_LEAVES),
             armature=0.002,
         ),
-    },
+    }
+
+
+def _walk_actuators_modeled():
+    """Bench-validated walk plant: explicit delayed PD + stick-slip friction + measured inertia.
+
+    Contract PD gains (stiffness/damping) and effort limits are unchanged from the baseline.
+    ``armature`` = measured reflected motor+gearbox inertia (JSON ``inertia``); the URDF link
+    masses provide the load inertia on top. Friction (coulomb/breakaway/viscous) is the fitted
+    stick-slip model; effort_limit is the internal actuator clip (effort_limit_sim left at its
+    explicit-actuator default 1e9 so PhysX doesn't double-clip — keeps _CONTRACT_EFFORT as the
+    single torque clamp, matching the firmware / bench torque cap semantics).
+    """
+    lf, af = _M6C12["friction"], _MAD5010["friction"]
+    return {
+        "legs": StickSlipDelayedPDActuatorCfg(
+            joint_names_expr=_LEG_GROUP,
+            effort_limit=_subset(_CONTRACT_EFFORT, _LEG_LEAVES),
+            velocity_limit=10.0,
+            stiffness=_subset(_CONTRACT_KP, _LEG_LEAVES),
+            damping=_subset(_CONTRACT_KD, _LEG_LEAVES),
+            armature=float(_M6C12["inertia"]),
+            min_delay=_LEG_DELAY[0], max_delay=_LEG_DELAY[1],
+            coulomb=float(lf["coulomb"]), breakaway=float(lf["breakaway"]),
+            viscous=float(lf["viscous"]), stribeck_vel=float(lf["stribeck_vel"]),
+            stick_vel=float(lf["stick_vel"]),
+        ),
+        "ankles": StickSlipDelayedPDActuatorCfg(
+            joint_names_expr=_ANKLE_GROUP,
+            effort_limit=_subset(_CONTRACT_EFFORT, _ANKLE_LEAVES),
+            velocity_limit=10.0,
+            stiffness=_subset(_CONTRACT_KP, _ANKLE_LEAVES),
+            damping=_subset(_CONTRACT_KD, _ANKLE_LEAVES),
+            armature=float(_MAD5010["inertia"]),
+            min_delay=_ANKLE_DELAY[0], max_delay=_ANKLE_DELAY[1],
+            coulomb=float(af["coulomb"]), breakaway=float(af["breakaway"]),
+            viscous=float(af["viscous"]), stribeck_vel=float(af["stribeck_vel"]),
+            stick_vel=float(af["stick_vel"]),
+        ),
+    }
+
+
+# Toggle: modeled plant on by default; set HUMANOID_ACTUATOR_MODEL=0 to train the baseline.
+_WALK_USE_ACTUATOR_MODEL = os.environ.get("HUMANOID_ACTUATOR_MODEL", "1") not in ("0", "false", "False")
+
+HUMANOID_BIPED_WALK_CFG = HUMANOID_BIPED_CFG.replace(
+    # Same real per-joint firmware PD gains as the squat cfg (the deployed ESC/contract gains,
+    # asymmetric, kp up to 68.4), but WITHOUT the squat init pose — the walk/velocity env sets
+    # its own standing init_state. Point the walk task at this so the policy trains on the real
+    # deployed plant instead of the uniform kp=20/kd=2 of HUMANOID_BIPED_CFG. REQUIRES RETRAINING
+    # + re-export of deploy/walk. Gains verified against humanoid-studio/configs/humanoid_lite.json.
+    actuators=(_walk_actuators_modeled() if _WALK_USE_ACTUATOR_MODEL else _walk_actuators_implicit()),
 )
 """Humanoid biped for the WALK / velocity task: real per-joint firmware PD gains from the
 policy contract (matches the ESC gains in humanoid-control / humanoid_lite.json), keeping
 HUMANOID_BIPED_CFG's default init pose (the walk env overrides init_state itself). Use this
-instead of HUMANOID_BIPED_CFG so the walk policy trains on the deployed hardware plant."""
+instead of HUMANOID_BIPED_CFG so the walk policy trains on the deployed hardware plant.
+
+The leg/ankle actuators are the bench-validated stick-slip + delayed-PD motor models by default
+(set HUMANOID_ACTUATOR_MODEL=0 for the original friction-free implicit baseline)."""
