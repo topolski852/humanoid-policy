@@ -35,3 +35,24 @@ Overridden on purpose (do **not** read these two fields from the JSON):
 
 The policy<->robot contract (45-dim obs, 12 actions, action scale, contract PD gains) is
 **unchanged** — these models only alter the sim *plant* (inertia, friction, latency).
+
+## Robot mass correction (same sim2real fidelity pass)
+
+The measured robot is **27.8 lb = 12.61 kg** (two legs + torso, no arms). The CAD-derived
+biped asset totalled only **11.34 kg (25.0 lb)** — ~10% light.
+
+Cross-check against the bench-measured assembled actuator weights (motor + 15:1 gearbox +
+ESC): M6C12 **0.680 kg** ×8 hip/knee joints + MAD5010 **0.425 kg** ×4 ankle joints =
+**7.14 kg (57% of the robot)**. The sim's 12 leg links total 8.18 kg, i.e. those 7.14 kg of
+motors + ~1.0 kg of 3D-printed structure — so **the motor mass is already represented
+correctly** in the leg links (the per-joint URDF distribution mounts each motor on the link
+it bolts to, so only the leg-group total is meaningful; it checks out). The ankle group is
+~75 g light — negligible.
+
+The entire **1.27 kg deficit is torso/structure** (battery, compute, wiring — absent from
+CAD). Fix: base/torso link mass **3.16 -> 4.43 kg**, diagonal + product inertia scaled
+x1.4016 (added mass assumed distributed like the torso; CoM kept — if the battery is mounted
+low, lowering base CoM z would further help walking stability). Applied in BOTH:
+  - `usd/humanoid_biped.usd` — root-layer override on /humanoid/base (Isaac loads this).
+  - `urdf/humanoid_biped.urdf` — source of truth kept consistent.
+The full-humanoid asset and the shared physics config are untouched.
