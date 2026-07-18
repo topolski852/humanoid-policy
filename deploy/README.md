@@ -15,6 +15,16 @@ Each folder contains:
 - `policy_latest.yaml` — deploy params: joint order, per-joint PD gains, **default joint positions**, obs/action layout. `policy_checkpoint_path` is repo-relative (`deploy/<name>/policy.onnx`).
 - `leg_policy_contract.json` — the sim↔real contract (canonical joint order, gains, limits, obs/action spec).
 
+## Archiving previous policies (`<folder>/archive/`)
+Each deploy folder keeps the **current** policy at its top level and previous ones under
+`<folder>/archive/<YYYY-MM-DD_short-name>/`. Before replacing a live policy, snapshot the five
+current files into a new dated subfolder there (with a short `ARCHIVE_NOTE.md` giving the run,
+checkpoint, and what changed) so any deployed policy can be rolled back or compared.
+
+Archived so far:
+- `walk/archive/2026-07-17_eureka-g2c3-fullprofile/` — the friction-free-trained Eureka g2c3
+  walk policy (old 11.34 kg mass); the pre-actuator-model baseline.
+
 ## ⚠️ Each policy has its own `default_joint_positions` — pair policy + contract on every switch
 All three share the same 45-dim obs / 12-dim action layout, but the **action offset and observation
 reference differ per policy**:
