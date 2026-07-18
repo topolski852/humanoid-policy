@@ -34,11 +34,21 @@ class TdmpcAgentCfg:
     mlp_dim: int = 256
     num_q: int = 5                       # Q-ensemble size
     horizon: int = 3                     # model rollout / planning horizon
+    num_enc_layers: int = 2              # encoder MLP depth
+    simnorm_dim: int = 8                 # SimNorm group size (latent_dim must be divisible)
+    dropout: float = 0.01                # Q-net dropout
+    log_std_min: float = -10.0
+    log_std_max: float = 2.0
+    entropy_coef: float = 1.0e-4
 
     # --- value distribution (two-hot) -----------------------------------------
     num_bins: int = 101
     vmin: float = -10.0
     vmax: float = 10.0
+
+    # TD-MPC2 acts in normalized [-1,1] action space; the env expects raw JointPosition actions
+    # up to ±_ACTION_RAW_LIMIT (4.0 -> ±1 rad offset via action scale 0.25). Map agent→env by ×this.
+    act_env_scale: float = 4.0
 
     # --- MPPI planner ----------------------------------------------------------
     mpc: bool = True
@@ -63,7 +73,11 @@ class TdmpcAgentCfg:
     rho: float = 0.5                     # per-step loss discount within the horizon
 
     # --- design toggles (approved plan) ---------------------------------------
-    use_privileged_critic: bool = True   # feed clean 48-dim critic obs into Q during training
+    # Asymmetric privileged critic is DEFERRED: TD-MPC2's value/Q operate on the shared latent z
+    # (encode(policy_obs)) and are evaluated on IMAGINED latents inside the MPPI planner, where the
+    # 48-dim privileged obs does not exist — so a privileged Q can't feed the planner. First cut is
+    # symmetric (45-dim latent for everything). Kept as a flag for a future separate value pathway.
+    use_privileged_critic: bool = False
     use_tdmpc2_square: bool = False      # TD-M(PC)² policy-regularization (buffer stores plan_mean/std regardless)
 
     # --- checkpoint / eval cadence --------------------------------------------
