@@ -11,3 +11,4 @@ from humanoid_policy.tdmpc.config import TdmpcAgentCfg
 @configclass
 class HumanoidBipedTdmpcCfg(TdmpcAgentCfg):
     experiment_name = "tdmpc_biped"
+    horizon = 5   # longer balance lookahead (was 3) — helps the planner see falls coming

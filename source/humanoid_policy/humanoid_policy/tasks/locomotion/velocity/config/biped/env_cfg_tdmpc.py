@@ -8,12 +8,13 @@ Everything else (obs, actions, terminations, events, commands, the modeled actua
 inherited unchanged. The PPO reward (RewardsCfg / HumanoidBipedEnvCfg) is NOT touched.
 """
 
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 
 import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
-from .env_cfg import HumanoidBipedEnvCfg, _STAND_BASE_HEIGHT
+from .env_cfg import HumanoidBipedEnvCfg, EventsCfg, _STAND_BASE_HEIGHT
 
 # Standing-height threshold for the gate: a touch below the nominal stand height so normal gait
 # bob still counts as "standing". Fallback if the pose library was unavailable at import.
@@ -34,7 +35,9 @@ class GatedRewardsCfg:
             "tracking_std": 0.25,
             "stand_height": _STAND_H,
             "upright_min": 0.8,
-            "move_weight": 0.5,   # upright-and-still earns 0.5; tracking the command earns the rest
+            # 0.75: standing-still only earns the 0.25 baseline; tracking the command earns the rest,
+            # so walking pays far more than parking (escape the stand-still local optimum).
+            "move_weight": 0.75,
         },
     )
     # explicit one-time cost for actually falling (episode-ending). Small vs the dense gate.
@@ -45,7 +48,26 @@ class GatedRewardsCfg:
 
 
 @configclass
+class GentleEventsCfg(EventsCfg):
+    """Gentler domain randomization so TD-MPC2 can learn to balance without being constantly
+    knocked over. Drops the mid-episode pushes and softens the reset external force/torque
+    (the harder-command DR was tuned for PPO's 590M-sample brute force)."""
+
+    push_robot = None  # no mid-episode ±0.8 m/s shoves
+    base_external_force_torque = EventTerm(
+        func=mdp.apply_external_force_torque,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base"),
+            "force_range": (-1.0, 1.0),    # softened from ±3
+            "torque_range": (-1.0, 1.0),
+        },
+        mode="reset",
+    )
+
+
+@configclass
 class HumanoidBipedTdmpcEnvCfg(HumanoidBipedEnvCfg):
-    """Biped walk env with the stability-gated reward — for the TD-MPC2 trainer."""
+    """Biped walk env with the stability-gated reward + gentler DR — for the TD-MPC2 trainer."""
 
     rewards: GatedRewardsCfg = GatedRewardsCfg()
+    events: GentleEventsCfg = GentleEventsCfg()
