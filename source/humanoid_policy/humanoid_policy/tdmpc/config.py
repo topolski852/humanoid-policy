@@ -88,6 +88,19 @@ class TdmpcAgentCfg:
     scale_threshold: float = 2.0
     prior_dof_ref: float = 61.0          # their coef is scaled by action_dim/61 (61-DOF HumanoidBench)
 
+    # --- command curriculum (stand -> slow walk -> full walk) -----------------
+    # Ramp the velocity command from ~0 up to full as the robot SURVIVES at each level (mean
+    # episode length > cmd_survive_frac of the max). Warm-start from a stand so level 0 already
+    # holds. Command-magnitude, not step-schedule, so it only speeds up when it's succeeding.
+    cmd_curriculum: bool = False
+    cmd_scale_start: float = 0.1
+    cmd_ramp_step: float = 0.1
+    # widen when mean TRAINING ep length > this * max_episode_length. Training survival is
+    # noise-limited (planning exploration + DR) below the deterministic policy's, so this is
+    # deliberately lenient (0.35 * 500 = 175 steps = 7 s of holding at the current command).
+    cmd_survive_frac: float = 0.35
+    cmd_ramp_interval: int = 50_000      # env-steps between ramp checks
+
     # --- checkpoint / eval cadence --------------------------------------------
     save_interval_steps: int = 50_000
     log_interval_steps: int = 1_000

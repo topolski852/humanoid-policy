@@ -33,6 +33,12 @@ parser.add_argument("--init_checkpoint", type=str, default=None,
 parser.add_argument("--updates_per_step", type=int, default=None,
                     help="Gradient updates per env-step iteration (raise for a higher update-to-data "
                          "ratio / faster learning at more wall-clock; default 1).")
+parser.add_argument("--cmd_curriculum", action="store_true",
+                    help="Ramp the velocity command 0->full as the robot survives (stand->walk).")
+parser.add_argument("--cmd_survive_frac", type=float, default=None,
+                    help="Curriculum: widen the command when mean ep length > this * max (default 0.35).")
+parser.add_argument("--cmd_ramp_interval", type=int, default=None,
+                    help="Curriculum: env-steps between ramp checks (default 50000).")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -74,6 +80,12 @@ def main():
         agent_cfg.seed_steps = args_cli.seed_steps
     if args_cli.updates_per_step is not None:
         agent_cfg.updates_per_step = args_cli.updates_per_step
+    if args_cli.cmd_curriculum:
+        agent_cfg.cmd_curriculum = True
+    if args_cli.cmd_survive_frac is not None:
+        agent_cfg.cmd_survive_frac = args_cli.cmd_survive_frac
+    if args_cli.cmd_ramp_interval is not None:
+        agent_cfg.cmd_ramp_interval = args_cli.cmd_ramp_interval
     if args_cli.plan_collection:
         agent_cfg.plan_collection = True
     if args_cli.tdmpc2_square:

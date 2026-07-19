@@ -29,6 +29,27 @@ class TdmpcTrainer:
         self.act_scale = float(cfg.act_env_scale)
         self.best_return = -float("inf")
         self.ret_hist = deque(maxlen=100)
+        self.len_hist = deque(maxlen=100)
+
+        # --- command curriculum (stand -> full walk, survival-gated) ---
+        self.cmd_curriculum = bool(getattr(cfg, "cmd_curriculum", False))
+        if self.cmd_curriculum:
+            self.cmd_term = env.uenv.command_manager.get_term("base_velocity")
+            self.cmd_term.cfg.heading_command = False  # sample ang_vel_z directly so we can ramp it
+            R = self.cmd_term.cfg.ranges
+            self._cmd_full = {k: getattr(R, k) for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z")}
+            self.max_ep_len = int(env.uenv.max_episode_length)
+            self.cmd_scale = float(cfg.cmd_scale_start)
+            self._last_ramp = 0
+            self._apply_cmd_scale()
+            print(f"[curriculum] command ramp ON: start scale={self.cmd_scale:.2f}, "
+                  f"widen when mean_ep_len > {cfg.cmd_survive_frac:.2f}*{self.max_ep_len}")
+
+    def _apply_cmd_scale(self):
+        R = self.cmd_term.cfg.ranges
+        s = self.cmd_scale
+        for k, (lo, hi) in self._cmd_full.items():
+            setattr(R, k, (lo * s, hi * s))
 
     def _save(self, name):
         self.agent.save(os.path.join(self.log_dir, name))
@@ -75,8 +96,22 @@ class TdmpcTrainer:
             if done.any():
                 for r in ep_return[done].tolist():
                     self.ret_hist.append(r)
+                for l in ep_len[done].tolist():
+                    self.len_hist.append(l)
                 ep_return = torch.where(done, torch.zeros_like(ep_return), ep_return)
                 ep_len = torch.where(done, torch.zeros_like(ep_len), ep_len)
+
+            # --- command curriculum: widen the command when surviving well at the current level ---
+            if self.cmd_curriculum and self.cmd_scale < 1.0 and total - self._last_ramp >= cfg.cmd_ramp_interval:
+                self._last_ramp = total
+                if self.len_hist:
+                    mean_len = sum(self.len_hist) / len(self.len_hist)
+                    if mean_len > cfg.cmd_survive_frac * self.max_ep_len:
+                        self.cmd_scale = min(1.0, self.cmd_scale + cfg.cmd_ramp_step)
+                        self._apply_cmd_scale()
+                        self.len_hist.clear()  # must re-prove survival at the new, harder level
+                        print(f"[curriculum] cmd_scale -> {self.cmd_scale:.2f} "
+                              f"(mean_ep_len {mean_len:.0f}/{self.max_ep_len})")
 
             obs_p, obs_c = nobs_p, nobs_c
             total += self.N
@@ -98,8 +133,13 @@ class TdmpcTrainer:
                 self.writer.add_scalar("buffer/size", len(buf), total)
                 for k, v in last_info.items():
                     self.writer.add_scalar(f"loss/{k}", float(v), total)
+                cmd_tag = f"cmd_scale={self.cmd_scale:.2f} " if self.cmd_curriculum else ""
+                mean_len = (sum(self.len_hist) / len(self.len_hist)) if self.len_hist else 0.0
+                if self.cmd_curriculum:
+                    self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
+                    self.writer.add_scalar("curriculum/mean_ep_len", mean_len, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
-                      f"ep_return={mean_ret:.2f} "
+                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 # best-checkpoint on smoothed return
                 if self.ret_hist and mean_ret > self.best_return:
