@@ -8,7 +8,8 @@ humanoid) without the user memorizing gym ids.
 # variant name -> gym task id
 VARIANTS = {
     "walk-biped": "Walk-Humanoid-Policy-Biped-v0",
-    "walk-biped-tdmpc": "Walk-Humanoid-Policy-Biped-Tdmpc-v0",  # TD-MPC2 gated-reward task
+    "walk-biped-tdmpc": "Walk-Humanoid-Policy-Biped-Tdmpc-v0",  # TD-MPC2 gated-reward task (phase 2: walk)
+    "walk-biped-tdmpc-stand": "Walk-Humanoid-Policy-Biped-Tdmpc-Stand-v0",  # phase 1: learn to stand
     "walk-humanoid": "Walk-Humanoid-Policy-v0",
     "standup-biped": "Standup-Humanoid-Policy-Biped-v0",
     "standup-humanoid": "Standup-Humanoid-Policy-v0",

@@ -28,6 +28,11 @@ parser.add_argument("--seed_steps", type=int, default=None, help="Random-action 
 parser.add_argument("--plan_collection", action="store_true", help="Collect with the MPPI planner (proper TD-MPC2).")
 parser.add_argument("--tdmpc2_square", action="store_true",
                     help="Enable TD-M(PC)² policy regularization (needs --plan_collection).")
+parser.add_argument("--init_checkpoint", type=str, default=None,
+                    help="Warm-start the agent from this .pt (e.g. curriculum phase-1 stand -> phase-2 walk).")
+parser.add_argument("--updates_per_step", type=int, default=None,
+                    help="Gradient updates per env-step iteration (raise for a higher update-to-data "
+                         "ratio / faster learning at more wall-clock; default 1).")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -67,6 +72,8 @@ def main():
         agent_cfg.max_env_steps = args_cli.max_env_steps
     if args_cli.seed_steps is not None:
         agent_cfg.seed_steps = args_cli.seed_steps
+    if args_cli.updates_per_step is not None:
+        agent_cfg.updates_per_step = args_cli.updates_per_step
     if args_cli.plan_collection:
         agent_cfg.plan_collection = True
     if args_cli.tdmpc2_square:
@@ -88,6 +95,9 @@ def main():
 
     agent = TDMPC2(agent_cfg, env.num_obs, env.num_actions, device)
     print(f"[tdmpc] world-model params: {agent.model.total_params:,}")
+    if args_cli.init_checkpoint is not None:
+        agent.load(args_cli.init_checkpoint)
+        print(f"[tdmpc] warm-started from {args_cli.init_checkpoint}")
     buffer = SequenceReplayBuffer(agent_cfg, env.num_envs, env.num_obs, env.num_priv_obs,
                                   env.num_actions, device)
 

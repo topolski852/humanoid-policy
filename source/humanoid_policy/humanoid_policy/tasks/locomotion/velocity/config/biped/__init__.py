@@ -28,3 +28,14 @@ gym.register(
         "tdmpc_cfg_entry_point": agents.tdmpc_cfg.HumanoidBipedTdmpcCfg,
     },
 )
+
+# Curriculum phase 1 — STAND (zero command, calm spawn). Warm-start the walk task from its ckpt.
+gym.register(
+    id="Walk-Humanoid-Policy-Biped-Tdmpc-Stand-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": env_cfg_tdmpc.HumanoidBipedTdmpcStandEnvCfg,
+        "tdmpc_cfg_entry_point": agents.tdmpc_cfg.HumanoidBipedTdmpcCfg,
+    },
+)

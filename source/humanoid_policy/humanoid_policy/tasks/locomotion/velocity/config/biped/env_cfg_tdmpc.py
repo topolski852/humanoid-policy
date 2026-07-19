@@ -67,7 +67,54 @@ class GentleEventsCfg(EventsCfg):
 
 @configclass
 class HumanoidBipedTdmpcEnvCfg(HumanoidBipedEnvCfg):
-    """Biped walk env with the stability-gated reward + gentler DR — for the TD-MPC2 trainer."""
+    """Biped walk env with the stability-gated reward + gentler DR — for the TD-MPC2 trainer.
+    PHASE 2 of the curriculum (full commands): warm-start from a phase-1 stand checkpoint."""
 
     rewards: GatedRewardsCfg = GatedRewardsCfg()
     events: GentleEventsCfg = GentleEventsCfg()
+
+
+# =========================================================================================
+# CURRICULUM PHASE 1 — learn to STAND (near-zero command, calm spawn). With the gated reward a
+# zero command means "track zero velocity" = stand still, which earns full reward when upright.
+# Once this stands cleanly, warm-start the walk task (phase 2) from its checkpoint
+# (train.py --init_checkpoint <phase1 model_best>).
+# =========================================================================================
+
+
+@configclass
+class StandEventsCfg(GentleEventsCfg):
+    """Even gentler than phase 2: spawn calm and near the stand pose so it can learn to HOLD a
+    stand before facing perturbations."""
+
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        params={
+            "pose_range": {"x": (-0.1, 0.1), "y": (-0.1, 0.1), "yaw": (-0.3, 0.3)},
+            "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
+                               "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0)},
+        },
+        mode="reset",
+    )
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_scale,
+        mode="reset",
+        params={"position_range": (0.98, 1.02), "velocity_range": (0.0, 0.0)},
+    )
+
+
+@configclass
+class HumanoidBipedTdmpcStandEnvCfg(HumanoidBipedTdmpcEnvCfg):
+    """PHASE 1: same gated reward, but commanded to STAND (zero velocity) with a calm spawn."""
+
+    events: StandEventsCfg = StandEventsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        r = self.commands.base_velocity.ranges
+        r.lin_vel_x = (0.0, 0.0)
+        r.lin_vel_y = (0.0, 0.0)
+        r.ang_vel_z = (0.0, 0.0)
+        r.heading = (0.0, 0.0)
+        self.commands.base_velocity.rel_standing_envs = 1.0
+        self.commands.base_velocity.heading_command = False
