@@ -32,7 +32,7 @@ variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.task is None and getattr(args_cli, "variant", None) is None:
-    args_cli.variant = "walk-biped"
+    args_cli.variant = "walk-biped-tdmpc"   # gated stability-first reward (env_cfg_tdmpc)
 variants.resolve_variant(args_cli)
 
 # Train on the bench-modeled actuator plant by default so the world model learns real dynamics.

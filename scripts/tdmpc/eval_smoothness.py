@@ -42,7 +42,7 @@ variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.task is None and getattr(args_cli, "variant", None) is None:
-    args_cli.variant = "walk-biped"
+    args_cli.variant = "walk-biped-tdmpc"
 variants.resolve_variant(args_cli)
 os.environ["HUMANOID_ACTUATOR_MODEL"] = "1" if args_cli.plant == "modeled" else "0"
 

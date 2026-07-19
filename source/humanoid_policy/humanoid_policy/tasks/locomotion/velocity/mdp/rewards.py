@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import torch
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,74 @@ from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+# =============================================================================================
+# GATED (multiplicative uprightness) reward — for the TD-MPC2 walk task ONLY.
+#
+# The PPO reward (RewardsCfg in config/biped/env_cfg.py) is ADDITIVE: the short-horizon TD-MPC2
+# planner can bank tracking reward while the torso tips, then "pay" the fall penalty beyond its
+# horizon -> it marches toward the command and topples. HumanoidBench (where TD-MPC2 walks
+# humanoids in ~2M steps) instead MULTIPLIES the task reward by an uprightness/standing gate, so
+# reward -> 0 the instant the robot is not upright: staying up is a prerequisite, not a competing
+# term. `gated_locomotion` reproduces that structure. These functions are NOT used by the PPO cfg.
+# =============================================================================================
+
+
+def _tolerance(x: torch.Tensor, lower: float, upper: float, margin: float,
+               value_at_margin: float = 0.1) -> torch.Tensor:
+    """dm_control-style tolerance: 1 inside [lower, upper], gaussian decay to `value_at_margin`
+    at `margin` beyond a bound, ->0 further out. margin<=0 -> hard 0/1 indicator."""
+    in_bounds = (x >= lower) & (x <= upper)
+    if margin <= 0.0:
+        return in_bounds.float()
+    d = torch.where(x < lower, lower - x, x - upper) / margin
+    scale = math.sqrt(-2.0 * math.log(value_at_margin))
+    decay = torch.exp(-0.5 * (d * scale) ** 2)
+    return torch.where(in_bounds, torch.ones_like(x), decay)
+
+
+def gated_locomotion(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    tracking_std: float,
+    stand_height: float,
+    upright_min: float = 0.8,
+    move_weight: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Uprightness-GATED velocity-tracking reward (HumanoidBench-style), per env, in [0, 1].
+
+        stand_gate  = standing(base_height) * upright(torso)              # both 0..1
+        move        = command tracking (lin + yaw), 0..1
+        reward      = stand_gate * small_control * ((1-move_weight) + move_weight * move)
+
+    If the robot is not near standing height AND upright, ``stand_gate -> 0`` and the whole reward
+    collapses regardless of tracking — so it cannot earn reward by toppling toward the command.
+    Being upright-and-still already earns the ``(1-move_weight)`` baseline; tracking the command
+    adds the rest (upright first, then walk)."""
+    asset = env.scene[asset_cfg.name]
+    data = asset.data
+
+    # standing: base world-z above the nominal standing height
+    h = data.root_pos_w.torch[:, 2]
+    standing = _tolerance(h, lower=stand_height, upper=float("inf"), margin=stand_height * 0.5)
+    # upright: -projected_gravity_z in body frame (~1 upright, 0 on its side)
+    up = -data.projected_gravity_b.torch[:, 2]
+    upright = _tolerance(up, lower=upright_min, upper=float("inf"), margin=upright_min)
+    stand_gate = standing * upright
+
+    # command tracking (0..1): planar velocity + yaw rate
+    lin = track_lin_vel_xy_yaw_frame_exp(env, tracking_std, command_name, asset_cfg)
+    ang = track_ang_vel_z_world_exp(env, command_name, tracking_std, asset_cfg)
+    move = 0.5 * lin + 0.5 * ang
+
+    # small-control factor in [0.8, 1] (mild preference for small actions -> smoother gait)
+    act = env.action_manager.action
+    ctrl = _tolerance(torch.norm(act, dim=-1) / act.shape[-1], lower=0.0, upper=0.0, margin=1.0)
+    small_control = (4.0 + ctrl) / 5.0
+
+    return stand_gate * small_control * ((1.0 - move_weight) + move_weight * move)
 
 
 def base_lin_accel_xy_l2(
