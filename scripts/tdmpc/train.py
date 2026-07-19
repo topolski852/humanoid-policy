@@ -26,6 +26,8 @@ parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--max_env_steps", type=int, default=None, help="Total env-steps budget (override cfg).")
 parser.add_argument("--seed_steps", type=int, default=None, help="Random-action warmup env-steps (override cfg).")
 parser.add_argument("--plan_collection", action="store_true", help="Collect with the MPPI planner (proper TD-MPC2).")
+parser.add_argument("--tdmpc2_square", action="store_true",
+                    help="Enable TD-M(PC)² policy regularization (needs --plan_collection).")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -67,6 +69,9 @@ def main():
         agent_cfg.seed_steps = args_cli.seed_steps
     if args_cli.plan_collection:
         agent_cfg.plan_collection = True
+    if args_cli.tdmpc2_square:
+        agent_cfg.use_tdmpc2_square = True
+        agent_cfg.plan_collection = True   # TD-M(PC)² needs planner mu/std
 
     torch.manual_seed(args_cli.seed)
     device = args_cli.device or env_cfg.sim.device

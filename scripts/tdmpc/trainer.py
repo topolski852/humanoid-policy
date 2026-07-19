@@ -46,18 +46,28 @@ class TdmpcTrainer:
 
         while total < cfg.max_env_steps:
             # --- act ---
+            plan_mean = plan_std = None
             if total < cfg.seed_steps:
                 agent_action = 2.0 * torch.rand(self.N, env.num_actions, device=env.device) - 1.0
             elif cfg.plan_collection:
-                agent_action = agent.plan_batch(obs_p, eval_mode=False)   # proper TD-MPC2 (MPPI collection)
+                agent_action, plan_mean, plan_std = agent.plan_batch(obs_p, eval_mode=False)  # proper TD-MPC2 (MPPI)
             else:
                 agent_action = agent.act_pi(obs_p, eval_mode=False)       # fast policy-prior collection
+            # TD-M(PC)²: every stored transition needs a planner (mean,std); non-planner steps
+            # (seed / prior) get a wide prior (max_std) so their regularization is ~inert.
+            if cfg.use_tdmpc2_square:
+                if plan_mean is None:
+                    plan_mean = agent_action
+                    plan_std = torch.full_like(agent_action, cfg.max_std)
+            else:
+                plan_mean = plan_std = None
             env_action = agent_action * self.act_scale
 
             # --- step + store (store the NORMALIZED action + pre-step policy obs) ---
             nobs_p, nobs_c, reward, terminated, time_out, _ = env.step(env_action)
             priv = obs_c if buf.use_priv else None
-            buf.add(obs_p, agent_action, reward, terminated, time_out, priv=priv)
+            buf.add(obs_p, agent_action, reward, terminated, time_out, priv=priv,
+                    plan_mean=plan_mean, plan_std=plan_std)
 
             ep_return += reward
             ep_len += 1

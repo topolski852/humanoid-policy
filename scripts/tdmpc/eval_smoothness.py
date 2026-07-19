@@ -106,7 +106,7 @@ def main():
     with torch.no_grad():
         for i in range(total):
             if args_cli.plan:
-                a = agent.plan_batch(obs_p, eval_mode=True)
+                a, _, _ = agent.plan_batch(obs_p, eval_mode=True)
             else:
                 a = agent.act_pi(obs_p, eval_mode=True)
             env_action = a * act_scale

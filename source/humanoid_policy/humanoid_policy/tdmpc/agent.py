@@ -151,24 +151,40 @@ class TDMPC2(torch.nn.Module):
             std = ((sc * (elite_actions - mean.unsqueeze(2)) ** 2).sum(2) / (sc.sum(2) + 1e-9)).sqrt()
             std = std.clamp(cfg.min_std, cfg.max_std)
 
-        a0 = mean[0]
+        mu0, std0 = mean[0], std[0]           # planner action distribution at t=0 (for TD-M(PC)²)
+        a0 = mu0
         if not eval_mode:
-            a0 = a0 + std[0] * torch.randn(N, A, device=dev)
-        return a0.clamp(-1, 1)
+            a0 = a0 + std0 * torch.randn(N, A, device=dev)
+        return a0.clamp(-1, 1), mu0, std0
 
     # ---- learning -------------------------------------------------------------
-    def update_pi(self, zs):
+    def update_pi(self, zs, plan_mean=None, plan_std=None):
+        cfg = self.cfg
         action, info = self.model.pi(zs)
         qs = self.model.Q(zs, action, return_type="avg")
         self.scale.update(qs[0])
         qs = self.scale(qs)
-        rho = torch.pow(self.cfg.rho, torch.arange(len(qs), device=self.device))
-        pi_loss = (-(self.cfg.entropy_coef * info["scaled_entropy"] + qs).mean(dim=(1, 2)) * rho).mean()
+        rho = torch.pow(cfg.rho, torch.arange(len(qs), device=self.device))
+        # base TD-MPC2 policy loss (entropy_coef*log_pi - Q, weighted by rho over the horizon)
+        q_loss = (-(cfg.entropy_coef * info["scaled_entropy"] + qs).mean(dim=(1, 2)) * rho).mean()
+        pi_loss = q_loss
+        prior_loss = torch.zeros((), device=self.device)
+        if cfg.use_tdmpc2_square and plan_mean is not None:
+            # TD-M(PC)² "residual": pull the policy sample toward the planner's Gaussian (mu,std).
+            H = plan_mean.shape[0]
+            pis = action[:H]                                   # (H,B,A) policy-sampled actions
+            std = plan_std.clamp_min(cfg.min_std)              # (H,B,A)
+            eps = (pis - plan_mean) / std
+            logp = (-0.5 * eps.pow(2) - std.log() - 0.9189385175704956).mean(dim=-1)  # (H,B) per-dim mean
+            if float(self.scale.value) > cfg.scale_threshold:
+                logp = logp / self.scale.value
+            prior_loss = -(logp.mean(dim=1) * rho[:H]).mean()  # maximize log-lik -> minimize -logp
+            pi_loss = q_loss + (cfg.prior_coef * cfg.action_dim / cfg.prior_dof_ref) * prior_loss
         pi_loss.backward()
-        pi_grad_norm = torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
+        pi_grad_norm = torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), cfg.grad_clip_norm)
         self.pi_optim.step()
         self.pi_optim.zero_grad(set_to_none=True)
-        return {"pi_loss": pi_loss.detach(), "pi_grad_norm": pi_grad_norm,
+        return {"pi_loss": pi_loss.detach(), "prior_loss": prior_loss.detach(), "pi_grad_norm": pi_grad_norm,
                 "pi_entropy": info["entropy"].detach().mean(), "pi_scale": self.scale.value.mean()}
 
     @torch.no_grad()
@@ -176,7 +192,7 @@ class TDMPC2(torch.nn.Module):
         action, _ = self.model.pi(next_z)
         return reward + self.discount * (1 - terminated) * self.model.Q(next_z, action, return_type="min", target=True)
 
-    def _update(self, obs, action, reward, terminated):
+    def _update(self, obs, action, reward, terminated, plan_mean=None, plan_std=None):
         """obs (H+1,B,obs_dim); action (H,B,A); reward,terminated (H,B,1)."""
         cfg = self.cfg
         with torch.no_grad():
@@ -217,7 +233,7 @@ class TDMPC2(torch.nn.Module):
         self.optim.step()
         self.optim.zero_grad(set_to_none=True)
 
-        pi_info = self.update_pi(zs.detach())
+        pi_info = self.update_pi(zs.detach(), plan_mean=plan_mean, plan_std=plan_std)
         # clear stray grads on Q/model params accumulated by the pi-loss (upstream used a detached Q copy)
         self.optim.zero_grad(set_to_none=True)
         self.model.soft_update_target_Q()
@@ -234,7 +250,9 @@ class TDMPC2(torch.nn.Module):
         action = batch["action"]
         reward = batch["reward"].unsqueeze(-1)         # (H,B,1)
         terminated = batch["terminated"].unsqueeze(-1)  # (H,B,1)
-        return self._update(obs, action, reward, terminated)
+        pm = batch.get("plan_mean") if self.cfg.use_tdmpc2_square else None
+        ps = batch.get("plan_std") if self.cfg.use_tdmpc2_square else None
+        return self._update(obs, action, reward, terminated, plan_mean=pm, plan_std=ps)
 
     # ---- checkpoint -----------------------------------------------------------
     def save(self, fp):

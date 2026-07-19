@@ -79,7 +79,14 @@ class TdmpcAgentCfg:
     # 48-dim privileged obs does not exist — so a privileged Q can't feed the planner. First cut is
     # symmetric (45-dim latent for everything). Kept as a flag for a future separate value pathway.
     use_privileged_critic: bool = False
-    use_tdmpc2_square: bool = False      # TD-M(PC)² policy-regularization (buffer stores plan_mean/std regardless)
+    # TD-M(PC)² (github.com/DarthUtopian/tdmpc_square_public, MIT): regularize the policy prior
+    # toward the PLANNER's action distribution (mu,std) that generated the data — fixes the
+    # value-overoptimism / policy-collapse that TD-MPC2 shows on higher-DOF bodies. Requires
+    # plan_collection so mu/std are available. prior_coef/scale_threshold from their config.yaml.
+    use_tdmpc2_square: bool = False
+    prior_coef: float = 1.0
+    scale_threshold: float = 2.0
+    prior_dof_ref: float = 61.0          # their coef is scaled by action_dim/61 (61-DOF HumanoidBench)
 
     # --- checkpoint / eval cadence --------------------------------------------
     save_interval_steps: int = 50_000
