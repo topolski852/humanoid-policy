@@ -21,12 +21,13 @@ from .env_cfg import HumanoidBipedEnvCfg, EventsCfg, _STAND_BASE_HEIGHT
 # bob still counts as "standing". Fallback if the pose library was unavailable at import.
 _STAND_H = (float(_STAND_BASE_HEIGHT) - 0.05) if _STAND_BASE_HEIGHT is not None else 0.50
 
-# Collapse-reset height: ~10 cm below standing, i.e. just below the reward's standing threshold
-# (_STAND_H = stand-0.05). A base that SAGS below this earns ~0 from the (now smooth) standing gate
-# AND resets — so a sag can't be marinated for free (the earlier -0.35 threshold ~-0.43 never fired,
-# base sagged to ~-0.2/-0.3 and sat there the whole episode). Still height-only: NO 45deg orientation
-# term and NO -1 penalty, so this is not the old survival-parking structure.
-_HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.10) if _STAND_BASE_HEIGHT is not None else -10.0
+# Collapse-reset height: DEEP (~30 cm below standing = torso essentially floored). Matching
+# HumanoidBench (terminate only at qpos[2]<0.2, i.e. truly on the floor), a fall does NOT reset —
+# the robot lies there earning ~0 for the REST of the episode. That makes falling COSTLY (you lose
+# the rest of the horizon), which is what forces a sustained gait rather than lean-fall-reset. The
+# earlier shallow -0.18 reset made falling cheap (quick respawn to a good stand) and removed that
+# pressure -> the robot leaned and let itself reset. Only a true collapse resets now.
+_HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.30) if _STAND_BASE_HEIGHT is not None else -10.0
 
 
 @configclass

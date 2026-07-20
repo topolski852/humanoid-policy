@@ -72,10 +72,24 @@ def gated_locomotion(
     upright = _tolerance(up, lower=upright_min, upper=float("inf"), margin=upright_min)
     stand_gate = standing * upright
 
-    # command tracking (0..1): planar velocity + yaw rate
-    lin = track_lin_vel_xy_yaw_frame_exp(env, tracking_std, command_name, asset_cfg)
-    ang = track_ang_vel_z_world_exp(env, command_name, tracking_std, asset_cfg)
-    move = 0.5 * lin + 0.5 * ang
+    # move (0..1): command-aware LINEAR speed reward (HumanoidBench-style). Reward the velocity
+    # COMPONENT ALONG THE COMMANDED DIRECTION, ramping linearly 0->1 as it reaches the commanded
+    # speed. This is the key difference from a loose Gaussian velocity-tracking term: undershoot is
+    # penalized PROPORTIONALLY, so leaning to fake a little transient velocity scores low and only a
+    # real, sustained gait at ~command speed scores full. (HumanoidBench demands >=1 m/s COM speed,
+    # unfakeable by leaning; we demand the commanded speed, up to 0.8 m/s here.) `tracking_std` is
+    # no longer used (kept in the signature for cfg compatibility).
+    cmd = env.command_manager.get_command(command_name)[:, :2]          # (N,2) commanded planar vel (yaw frame)
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w.torch),
+                                 asset.data.root_lin_vel_w.torch[:, :3])[:, :2]  # (N,2) actual planar vel
+    cmd_speed = torch.norm(cmd, dim=1)                                  # (N,)
+    moving = cmd_speed > 0.1
+    cmd_dir = cmd / cmd_speed.clamp_min(1e-6).unsqueeze(-1)
+    v_along = (vel_yaw * cmd_dir).sum(dim=1)                            # progress speed toward the command
+    move_go = (v_along / cmd_speed.clamp_min(1e-6)).clamp(0.0, 1.0)     # linear 0->1 at commanded speed
+    speed = torch.norm(vel_yaw, dim=1)
+    move_stand = _tolerance(speed, lower=0.0, upper=0.0, margin=0.5)    # reward stillness when told to stand
+    move = torch.where(moving, move_go, move_stand)
 
     # small-control factor in [0.8, 1] (mild preference for small actions -> smoother gait)
     act = env.action_manager.action
