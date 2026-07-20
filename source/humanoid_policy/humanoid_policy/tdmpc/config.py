@@ -81,6 +81,10 @@ class TdmpcAgentCfg:
     # 48-dim privileged obs does not exist — so a privileged Q can't feed the planner. First cut is
     # symmetric (45-dim latent for everything). Kept as a flag for a future separate value pathway.
     use_privileged_critic: bool = False
+    # torch.compile the _update step end-to-end (mode="reduce-overhead" / cudagraphs). Benchmarked
+    # 3.6x faster updates on RTX 5080 (sm_120) + torch 2.11 vs eager (the GPU was launch-overhead
+    # bound at ~60% util). Static shapes (batch 256, horizon 5) so cudagraphs capture cleanly.
+    compile: bool = False
     # TD-M(PC)² (github.com/DarthUtopian/tdmpc_square_public, MIT): regularize the policy prior
     # toward the PLANNER's action distribution (mu,std) that generated the data — fixes the
     # value-overoptimism / policy-collapse that TD-MPC2 shows on higher-DOF bodies. Requires

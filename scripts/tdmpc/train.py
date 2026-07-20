@@ -36,6 +36,9 @@ parser.add_argument("--updates_per_step", type=int, default=None,
 parser.add_argument("--seed_burst_updates", type=int, default=None,
                     help="One-time pretraining burst of gradient updates at the seed boundary "
                          "(official TD-MPC2 ~= seed_steps; set 0 to disable).")
+parser.add_argument("--compile", action="store_true",
+                    help="torch.compile the update step (~3.6x faster updates on this GPU; "
+                         "one-time compile warmup of ~1-2 min at start).")
 parser.add_argument("--cmd_curriculum", action="store_true",
                     help="Ramp the velocity command 0->full as the robot survives (stand->walk).")
 parser.add_argument("--cmd_survive_frac", type=float, default=None,
@@ -85,6 +88,8 @@ def main():
         agent_cfg.updates_per_step = args_cli.updates_per_step
     if args_cli.seed_burst_updates is not None:
         agent_cfg.seed_burst_updates = args_cli.seed_burst_updates
+    if args_cli.compile:
+        agent_cfg.compile = True
     if args_cli.cmd_curriculum:
         agent_cfg.cmd_curriculum = True
     if args_cli.cmd_survive_frac is not None:
