@@ -21,9 +21,12 @@ from .env_cfg import HumanoidBipedEnvCfg, EventsCfg, _STAND_BASE_HEIGHT
 # bob still counts as "standing". Fallback if the pose library was unavailable at import.
 _STAND_H = (float(_STAND_BASE_HEIGHT) - 0.05) if _STAND_BASE_HEIGHT is not None else 0.50
 
-# Hard-collapse height: ~35 cm below standing = torso essentially on the floor. Only a true
-# face-plant resets the episode (see NonEpisodicTerminationsCfg); a mild stumble/tilt does NOT.
-_HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.35) if _STAND_BASE_HEIGHT is not None else -10.0
+# Collapse-reset height: ~10 cm below standing, i.e. just below the reward's standing threshold
+# (_STAND_H = stand-0.05). A base that SAGS below this earns ~0 from the (now smooth) standing gate
+# AND resets — so a sag can't be marinated for free (the earlier -0.35 threshold ~-0.43 never fired,
+# base sagged to ~-0.2/-0.3 and sat there the whole episode). Still height-only: NO 45deg orientation
+# term and NO -1 penalty, so this is not the old survival-parking structure.
+_HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.10) if _STAND_BASE_HEIGHT is not None else -10.0
 
 
 @configclass
@@ -55,6 +58,10 @@ class GatedRewardsCfg:
             "command_name": "base_velocity",
             "tracking_std": 0.25,
             "stand_height": _STAND_H,
+            # smooth standing-gate decay below stand_height (positive margin => real gradient to
+            # lift the base out of a sag; the sim's negative stand_height made the old auto-margin
+            # <0 -> hard 0/1 gate with no gradient -> stable-crouch trap).
+            "stand_margin": 0.12,
             "upright_min": 0.8,
             # 0.75: standing-still only earns the 0.25 baseline; tracking the command earns the rest,
             # so walking pays far more than parking (escape the stand-still local optimum).

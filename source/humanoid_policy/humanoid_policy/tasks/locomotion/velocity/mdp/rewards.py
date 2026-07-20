@@ -44,6 +44,7 @@ def gated_locomotion(
     stand_height: float,
     upright_min: float = 0.8,
     move_weight: float = 0.5,
+    stand_margin: float = 0.12,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Uprightness-GATED velocity-tracking reward (HumanoidBench-style), per env, in [0, 1].
@@ -59,9 +60,13 @@ def gated_locomotion(
     asset = env.scene[asset_cfg.name]
     data = asset.data
 
-    # standing: base world-z above the nominal standing height
+    # standing: base world-z above the nominal standing height. Use an explicit POSITIVE margin so
+    # the gate DECAYS SMOOTHLY as the base sags below stand_height (gives a gradient to lift the base
+    # back up). stand_height is negative in this sim frame, so the old `stand_height*0.5` margin was
+    # <0 -> _tolerance fell back to a hard 0/1 indicator with no gradient in the sag band (the robot
+    # got stuck in a stable crouch earning ~0 with nothing pulling it up).
     h = data.root_pos_w.torch[:, 2]
-    standing = _tolerance(h, lower=stand_height, upper=float("inf"), margin=stand_height * 0.5)
+    standing = _tolerance(h, lower=stand_height, upper=float("inf"), margin=stand_margin)
     # upright: -projected_gravity_z in body frame (~1 upright, 0 on its side)
     up = -data.projected_gravity_b.torch[:, 2]
     upright = _tolerance(up, lower=upright_min, upper=float("inf"), margin=upright_min)
