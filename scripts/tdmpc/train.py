@@ -33,6 +33,9 @@ parser.add_argument("--init_checkpoint", type=str, default=None,
 parser.add_argument("--updates_per_step", type=int, default=None,
                     help="Gradient updates per env-step iteration (raise for a higher update-to-data "
                          "ratio / faster learning at more wall-clock; default 1).")
+parser.add_argument("--seed_burst_updates", type=int, default=None,
+                    help="One-time pretraining burst of gradient updates at the seed boundary "
+                         "(official TD-MPC2 ~= seed_steps; set 0 to disable).")
 parser.add_argument("--cmd_curriculum", action="store_true",
                     help="Ramp the velocity command 0->full as the robot survives (stand->walk).")
 parser.add_argument("--cmd_survive_frac", type=float, default=None,
@@ -80,6 +83,8 @@ def main():
         agent_cfg.seed_steps = args_cli.seed_steps
     if args_cli.updates_per_step is not None:
         agent_cfg.updates_per_step = args_cli.updates_per_step
+    if args_cli.seed_burst_updates is not None:
+        agent_cfg.seed_burst_updates = args_cli.seed_burst_updates
     if args_cli.cmd_curriculum:
         agent_cfg.cmd_curriculum = True
     if args_cli.cmd_survive_frac is not None:

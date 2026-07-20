@@ -10,6 +10,7 @@ inherited unchanged. The PPO reward (RewardsCfg / HumanoidBipedEnvCfg) is NOT to
 
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.configclass import configclass
 
@@ -19,6 +20,26 @@ from .env_cfg import HumanoidBipedEnvCfg, EventsCfg, _STAND_BASE_HEIGHT
 # Standing-height threshold for the gate: a touch below the nominal stand height so normal gait
 # bob still counts as "standing". Fallback if the pose library was unavailable at import.
 _STAND_H = (float(_STAND_BASE_HEIGHT) - 0.05) if _STAND_BASE_HEIGHT is not None else 0.50
+
+# Hard-collapse height: ~35 cm below standing = torso essentially on the floor. Only a true
+# face-plant resets the episode (see NonEpisodicTerminationsCfg); a mild stumble/tilt does NOT.
+_HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.35) if _STAND_BASE_HEIGHT is not None else -10.0
+
+
+@configclass
+class NonEpisodicTerminationsCfg:
+    """TD-MPC2/HumanoidBench-style episode structure: a fall does NOT end the episode. Only a
+    true collapse (torso on the floor, which a biped can't self-right from) resets — this desyncs
+    env resets and keeps the buffer from filling with dead floor-lying data, while removing the
+    45-degree ``base_orientation`` termination that made "survive by standing still" the optimum.
+    A mild tilt/stumble now costs ~0 reward (the gate) but lets the robot RECOVER instead of dying.
+    """
+
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    hard_collapse = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": _HARD_COLLAPSE_H, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
+    )
 
 
 @configclass
@@ -40,8 +61,10 @@ class GatedRewardsCfg:
             "move_weight": 0.75,
         },
     )
-    # explicit one-time cost for actually falling (episode-ending). Small vs the dense gate.
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-1.0)
+    # NO explicit fall penalty: matching TD-MPC2/HumanoidBench, a fall is disincentivized purely by
+    # the gate zeroing reward while toppled + the value bootstrap being masked to 0 at the terminal
+    # (see the hard-collapse termination below). An explicit -1 penalty + the 45deg termination was
+    # what made "survive by standing still" optimal — removed.
     # light ungated shaping for smoothness / joint safety (don't fight the gate)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)
@@ -72,6 +95,7 @@ class HumanoidBipedTdmpcEnvCfg(HumanoidBipedEnvCfg):
 
     rewards: GatedRewardsCfg = GatedRewardsCfg()
     events: GentleEventsCfg = GentleEventsCfg()
+    terminations: NonEpisodicTerminationsCfg = NonEpisodicTerminationsCfg()
 
 
 # =========================================================================================

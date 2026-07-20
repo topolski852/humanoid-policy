@@ -64,6 +64,7 @@ class TdmpcTrainer:
         last_save = 0
         t_start = time.time()
         last_info = {}
+        burst_done = False        # one-time seed-pretraining burst fires when seeding ends
 
         while total < cfg.max_env_steps:
             # --- act ---
@@ -118,6 +119,20 @@ class TdmpcTrainer:
 
             # --- learn ---
             if total >= cfg.seed_steps:
+                # one-time seed-pretraining BURST: warm the world model on the seed buffer before
+                # online collection starts, mirroring upstream online_trainer (num_updates=seed_steps),
+                # so early MPPI plans on a trained model instead of a near-random one.
+                n_burst = int(getattr(cfg, "seed_burst_updates", 0))
+                if not burst_done and n_burst > 0:
+                    burst_done = True
+                    print(f"[tdmpc] seed pretraining burst: {n_burst} updates on {len(buf)} samples")
+                    t_b = time.time()
+                    for i in range(n_burst):
+                        batch = buf.sample(cfg.batch_size)
+                        if batch is not None:
+                            last_info = agent.update(batch)
+                    print(f"[tdmpc] burst done in {time.time() - t_b:.0f}s "
+                          + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 for _ in range(cfg.updates_per_step):
                     batch = buf.sample(cfg.batch_size)
                     if batch is not None:

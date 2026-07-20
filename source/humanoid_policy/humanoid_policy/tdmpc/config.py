@@ -25,6 +25,8 @@ class TdmpcAgentCfg:
     num_envs: int = 32
     buffer_size: int = 1_000_000        # total transitions (spread across num_envs rings)
     seed_steps: int = 5_000             # env-steps of random actions before learning
+    seed_burst_updates: int = 2_500     # one-time pretraining burst at the seed boundary (official
+                                        # TD-MPC2 does `num_updates = seed_steps` before online play)
     updates_per_step: int = 1           # gradient updates per env-step
     max_env_steps: int = 3_000_000      # total env-steps budget (per-env count × num_envs)
     plan_collection: bool = False       # collect with the MPPI planner (proper TD-MPC2) vs the fast prior

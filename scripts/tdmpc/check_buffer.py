@@ -57,25 +57,41 @@ def run(device, use_priv):
 
     # sample many windows and validate
     total = 0
+    n_term_boundary = 0        # windows whose last transition is `terminated` (the fixed path)
     for _ in range(200):
         batch = buf.sample(batch_size=256)
         assert batch is not None
         obs = batch["obs"]                              # (H+1, B, obs_dim)
         c = obs[..., 0]                                 # (H+1, B) episode-local counters
-        diffs = c[1:] - c[:-1]                          # (H, B)
-        bad = (diffs != 1.0)
-        assert not bad.any(), f"cross-boundary/discontinuity: {int(bad.sum())} of {diffs.numel()} steps"
+        diffs = c[1:] - c[:-1]                          # (H, B): step i = c[i+1]-c[i]
+        term_last = batch["terminated"][H - 1] > 0.5    # (B,) boundary transition terminal?
+        # INTERIOR obs (steps 0..H-2) must always be continuous (+1): no interior reset ever.
+        bad_interior = (diffs[: H - 1] != 1.0)
+        assert not bad_interior.any(), f"interior discontinuity: {int(bad_interior.sum())} steps"
+        # BOUNDARY step (H-1): continuous UNLESS the last transition terminated, in which case
+        # obs[H] is a reset obs (counter->0) that is intentionally allowed (masked, never used).
+        ok_last = (diffs[H - 1] == 1.0) | term_last
+        assert ok_last.all(), f"boundary obs wrong on {int((~ok_last).sum())} non-terminal windows"
+        # no window may end on a time_out boundary (its reset next-obs WOULD be bootstrapped)
+        # -> a non-terminal boundary must be continuous, which ok_last already enforced.
+        n_term_boundary += int(term_last.sum())
         # shape checks
         assert batch["action"].shape == (H, 256, act_dim)
         assert batch["reward"].shape == (H, 256)
         assert batch["terminated"].shape == (H, 256)
         if use_priv:
             assert batch["priv"].shape == (H + 1, 256, priv_dim)
-            assert torch.equal(batch["priv"][..., 0], c)  # priv counter must match obs counter
+            # priv counter matches obs counter on all but a terminated boundary's reset obs
+            pc = batch["priv"][..., 0]
+            match = (pc == c)
+            match[H] = match[H] | term_last            # allow mismatch only at a terminal reset obs
+            assert match.all()
         total += diffs.numel()
+    assert n_term_boundary > 0, "no terminated-boundary windows sampled — fix path not exercised!"
 
     vram = torch.cuda.memory_allocated(device) / 1e6 if str(device).startswith("cuda") else 0.0
     print(f"  [{device}, priv={use_priv}] OK: {total} intra-window steps validated, "
+          f"{n_term_boundary} terminated-boundary windows, "
           f"len(buf)={len(buf)}, cap/env={buf.cap}, VRAM={vram:.1f} MB")
 
 

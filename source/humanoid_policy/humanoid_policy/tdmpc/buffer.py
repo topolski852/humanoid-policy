@@ -6,16 +6,20 @@ boundary — the critical correctness requirement, because Isaac auto-resets don
 the true terminal obs is lost (verified in isaaclab source). Pure torch tensors, no torchrl, so
 it works against torch 2.11 / tensordict 0.13 without the upstream pins.
 
-Boundary rule: a transition stored at time index t carries `done[t] = terminated | time_out`. A
-sampled window starting at s and covering obs indices s..s+H (H=horizon) is valid iff none of the
-transitions at s..s+H-1 is a `done` (a done at the last index s+H-1 would mean obs s+H is a
-reset obs of a new episode — disallowed). We enforce this with a per-slot "steps-until-next-done"
-count maintained incrementally.
+Boundary rule: a transition stored at time index t carries `terminated[t]`, `time_out[t]`, and
+`done[t] = terminated | time_out`. A sampled window starts at s, uses transitions s..s+H-1 and obs
+s..s+H (H=horizon). It is valid iff:
+  * no `done` on the INTERIOR transitions s..s+H-2 (an interior reset would break obs continuity /
+    the imagined-rollout targets); AND
+  * the BOUNDARY transition s+H-1 is not a `time_out` (a truncation's next-obs s+H is a reset obs,
+    but `terminated=0` there so the target would wrongly bootstrap V of a reset state).
+A `terminated` boundary transition at s+H-1 IS allowed: `(1-terminated)=0` zeros the bootstrap, so
+obs s+H (a reset obs) is never used — and this is the ONLY way a `terminated=1` transition (and the
+"terminal has no future" signal) ever enters the loss. Excluding it (the earlier rule) made the
+`(1-terminated)` mask dead code and the value fn over-value near-collapse states.
 
 Terminal-value bootstrap: `sample` returns `terminated` per step so the agent masks the value
-target `r + gamma*(1-terminated)*V(next)`. `time_out` (truncation) must NOT zero the bootstrap;
-by construction a time_out only ever lands on the final transition of a valid window, whose
-next-value simply isn't used, so truncation is handled correctly without special-casing.
+target `r + gamma*(1-terminated)*V(next)`.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ class SequenceReplayBuffer:
         self.action = f(self.cap, self.N, self.act_dim)
         self.reward = f(self.cap, self.N)
         self.terminated = torch.zeros(self.cap, self.N, dtype=torch.bool, device=device)
+        self.time_out = torch.zeros(self.cap, self.N, dtype=torch.bool, device=device)
         self.done = torch.zeros(self.cap, self.N, dtype=torch.bool, device=device)
         # TD-M(PC)²: planner mean/std stored from day 1 (unused until the toggle is on)
         self.plan_mean = f(self.cap, self.N, self.act_dim)
@@ -65,6 +70,7 @@ class SequenceReplayBuffer:
         self.action[t] = action
         self.reward[t] = reward
         self.terminated[t] = terminated
+        self.time_out[t] = time_out
         self.done[t] = terminated | time_out
         if plan_mean is not None:
             self.plan_mean[t] = plan_mean
@@ -74,8 +80,9 @@ class SequenceReplayBuffer:
 
     @torch.no_grad()
     def _valid_starts(self):
-        """Boolean (rows, N) mask of window-start slots whose [s, s+H] window is fully in-buffer,
-        contiguous (no ring-wrap over head), and crosses no interior done."""
+        """Boolean mask of window-start slots whose [s, s+H] window is fully in-buffer, contiguous
+        (no ring-wrap over head), has no INTERIOR done (positions s..s+H-2), and whose BOUNDARY
+        transition s+H-1 is not a time_out. A `terminated` boundary IS allowed (bootstrap masked)."""
         if self.size < self.H + 1:
             return None
         # candidate start rows: those with H full transitions + 1 trailing obs ahead of them,
@@ -84,21 +91,20 @@ class SequenceReplayBuffer:
         start_logical = (self.head - self.size) % self.cap
         # physical rows in chronological order
         order = (start_logical + torch.arange(self.size, device=self.device)) % self.cap  # (size,)
-        done_chrono = self.done[order]  # (size, N) in chronological order
-        # a start at chronological position p (0..size-1) needs positions p..p+H-1 to be non-done
-        # and p+H <= size-1 (so obs at p+H exists). Compute via a sliding no-done check.
+        done_chrono = self.done[order]          # (size, N) in chronological order
+        timeout_chrono = self.time_out[order]   # (size, N)
         H = self.H
         n = self.size
         if n - H < 1:
             return None
-        # cumulative done count to test "any done in [p, p+H-1]"
-        # pad with zeros row at front for prefix sums
+        # cumulative done count for the INTERIOR test "any done in [p, p+H-2]"
         z = torch.zeros(1, self.N, device=self.device)
         csum = torch.cat([z, torch.cumsum(done_chrono.float(), dim=0)], dim=0)  # (n+1, N)
         # valid start positions p in [0, n-H-1]; window transitions p..p+H-1
-        p = torch.arange(0, n - H, device=self.device)  # ensures p+H <= n-1
-        interior_dones = csum[p + H] - csum[p]  # (len(p), N) count of dones in [p, p+H-1]
-        valid_chrono = interior_dones == 0  # (len(p), N)
+        p = torch.arange(0, n - H, device=self.device)  # ensures p+H <= n-1 (obs at p+H exists)
+        interior_dones = csum[p + H - 1] - csum[p]        # dones in [p, p+H-2] (interior only)
+        boundary_timeout = timeout_chrono[p + H - 1]      # (len(p), N) time_out at the last transition
+        valid_chrono = (interior_dones == 0) & (~boundary_timeout)  # (len(p), N)
         return order, p, valid_chrono  # physical order map + chronological start positions + mask
 
     @torch.no_grad()

@@ -204,9 +204,16 @@ class TDMPC2(torch.nn.Module):
         z = self.model.encode(obs[0])
         zs[0] = z
         consistency_loss = 0
+        # Mask the consistency target at `terminated` steps: on a hard-collapse boundary the stored
+        # next-obs is a RESET obs (Isaac overwrites the true terminal obs on auto-reset), so training
+        # dynamics to predict it would teach "collapse -> fresh upright spawn" and make the planner
+        # value collapsing. (1-terminated) drops those steps; official TD-MPC2 keeps the true terminal
+        # obs via torchrl so it never needs this.
+        not_term = 1.0 - terminated                          # (H,B,1)
         for t, (_action, _next_z) in enumerate(zip(action.unbind(0), next_z.unbind(0))):
             z = self.model.next(z, _action)
-            consistency_loss = consistency_loss + F.mse_loss(z, _next_z) * cfg.rho ** t
+            mse = F.mse_loss(z, _next_z, reduction="none").mean(dim=-1, keepdim=True)  # (B,1)
+            consistency_loss = consistency_loss + (mse * not_term[t]).mean() * cfg.rho ** t
             zs[t + 1] = z
 
         _zs = zs[:-1]
