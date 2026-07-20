@@ -31,6 +31,16 @@ class TdmpcTrainer:
         self.ret_hist = deque(maxlen=100)
         self.len_hist = deque(maxlen=100)
 
+        # --- ground-speed telemetry: mean planar base speed (m/s) during collection. Over a long
+        # run this is the "is it actually locomoting" signal (return alone doesn't reveal walking).
+        # Accumulated on-GPU, synced once per log interval. Robust: disabled if the handle is absent.
+        try:
+            self._robot = env.uenv.scene["robot"]
+        except Exception:
+            self._robot = None
+        self._spd_sum = None
+        self._spd_n = 0
+
         # --- command curriculum (stand -> full walk, survival-gated) ---
         self.cmd_curriculum = bool(getattr(cfg, "cmd_curriculum", False))
         if self.cmd_curriculum:
@@ -91,6 +101,12 @@ class TdmpcTrainer:
             buf.add(obs_p, agent_action, reward, terminated, time_out, priv=priv,
                     plan_mean=plan_mean, plan_std=plan_std)
 
+            # ground-speed telemetry (on-GPU accumulate; .item() only at log time)
+            if self._robot is not None:
+                spd = self._robot.data.root_lin_vel_w.torch[:, :2].norm(dim=1).mean()
+                self._spd_sum = spd if self._spd_sum is None else self._spd_sum + spd
+                self._spd_n += 1
+
             ep_return += reward
             ep_len += 1
             done = terminated | time_out
@@ -150,11 +166,15 @@ class TdmpcTrainer:
                     self.writer.add_scalar(f"loss/{k}", float(v), total)
                 cmd_tag = f"cmd_scale={self.cmd_scale:.2f} " if self.cmd_curriculum else ""
                 mean_len = (sum(self.len_hist) / len(self.len_hist)) if self.len_hist else 0.0
+                mean_spd = float((self._spd_sum / self._spd_n)) if self._spd_n > 0 else 0.0
+                self._spd_sum = None
+                self._spd_n = 0
+                self.writer.add_scalar("collect/ground_speed_mps", mean_spd, total)
                 if self.cmd_curriculum:
                     self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
                     self.writer.add_scalar("curriculum/mean_ep_len", mean_len, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
-                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} {cmd_tag}"
+                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 # best-checkpoint on smoothed return
                 if self.ret_hist and mean_ret > self.best_return:

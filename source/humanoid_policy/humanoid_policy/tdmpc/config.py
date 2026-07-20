@@ -31,10 +31,13 @@ class TdmpcAgentCfg:
     max_env_steps: int = 3_000_000      # total env-steps budget (per-env count × num_envs)
     plan_collection: bool = False       # collect with the MPPI planner (proper TD-MPC2) vs the fast prior
 
-    # --- model size (START SMALL) ---------------------------------------------
-    latent_dim: int = 256
+    # --- model size (OFFICIAL BASE) -------------------------------------------
+    # Official TD-MPC2 defaults: latent_dim 512, mlp_dim 512, enc_dim 256. We ran 256/256 early
+    # ("start small") but for the full-budget base run we use the official capacity — value/model
+    # learning over 10M steps benefits from it and the GPU has headroom. (enc_dim already matches.)
+    latent_dim: int = 512
     enc_dim: int = 256
-    mlp_dim: int = 256
+    mlp_dim: int = 512
     num_q: int = 5                       # Q-ensemble size
     horizon: int = 3                     # model rollout / planning horizon
     num_enc_layers: int = 2              # encoder MLP depth

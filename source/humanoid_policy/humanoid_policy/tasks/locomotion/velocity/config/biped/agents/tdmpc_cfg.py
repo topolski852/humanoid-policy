@@ -11,4 +11,6 @@ from humanoid_policy.tdmpc.config import TdmpcAgentCfg
 @configclass
 class HumanoidBipedTdmpcCfg(TdmpcAgentCfg):
     experiment_name = "tdmpc_biped"
-    horizon = 5   # longer balance lookahead (was 3) — helps the planner see falls coming
+    # horizon stays at the official default (3): the learned value function — not the rollout
+    # length — provides beyond-horizon foresight, and a longer horizon compounds latent-model error
+    # (and costs linearly more compute). We tested 5 earlier; reverting to base for the full run.
