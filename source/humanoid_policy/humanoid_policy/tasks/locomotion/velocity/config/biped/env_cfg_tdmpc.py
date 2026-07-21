@@ -16,6 +16,7 @@ from isaaclab.utils.configclass import configclass
 
 import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
 from .env_cfg import HumanoidBipedEnvCfg, EventsCfg, _STAND_BASE_HEIGHT
+from .env_cfg import TerminationsCfg as EpisodicTerminationsCfg  # 45° tilt / height-collapse resets
 
 # Standing-height threshold for the gate: a touch below the nominal stand height so normal gait
 # bob still counts as "standing". Fallback if the pose library was unavailable at import.
@@ -179,13 +180,13 @@ class StandEventsCfg(GentleEventsCfg):
 
 @configclass
 class StandRewardsCfg:
-    """PHASE-1 STAND reward: hold the upright spawn. Deliberately has NO gait terms — feet_air_time
-    rewards an airborne foot, which a fallen robot games by lying down and waving a leg (observed).
-    Here every term aligns with "stay vertical and still", so there is nothing to farm by falling:
-    the gated core (with cmd=0) rewards upright+still, a strong ungated upright bonus supplies the
-    gradient to stand up, and the stability penalties (which fight the WALK gait) are exactly right
-    for standing (penalizing motion == hold still). Falling is punished by undesired_contacts + the
-    gate collapsing. Once this stands solidly, warm-start the WALK phase from it."""
+    """PHASE-1 STAND reward (v2) = the recipe that PROVABLY stood before (stand phase-1: 0 falls).
+    EPISODIC survival is the driver: a fall ends the episode + costs -1, so the only way to keep
+    earning is to hold the upright spawn -> "survive by standing still" is exactly the goal here.
+    MINIMAL penalties so the robot can freely make the corrective micro-movements a biped needs to
+    balance (an inverted pendulum must move to stay up); the heavy stability stack (flat_orientation
+    / ang_vel / base_accel / undesired_contacts) suppressed that and trapped v1 in a still slump.
+    NO gait terms (nothing to farm by falling). Add smoothness back only AFTER it stands cleanly."""
 
     stand_hold = RewTerm(
         func=mdp.gated_locomotion,
@@ -199,32 +200,22 @@ class StandRewardsCfg:
             "move_weight": 0.75,   # cmd=0 -> move term rewards stillness
         },
     )
-    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.4)   # strong "be vertical" gradient
-    # stability / smoothness — for STANDING these correctly mean "hold still & level"
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.5)
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.1)
-    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=-0.02)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    # safety
-    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)
-    undesired_contacts = RewTerm(
-        func=mdp.undesired_contacts,
-        weight=-0.3,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip_.*", ".*_knee_.*"]),
-            "threshold": 1.0,
-        },
-    )
+    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.4)     # strong "be vertical" gradient
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-1.0)  # episodic: falling costs
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)   # light jerk penalty only
+    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)  # joint safety
 
 
 @configclass
 class HumanoidBipedTdmpcStandEnvCfg(HumanoidBipedTdmpcEnvCfg):
-    """PHASE 1: learn to STAND — zero command, calm spawn, clean stand reward (no gameable gait
-    terms). Warm-start the walk phase from this once it holds a solid upright stand."""
+    """PHASE 1: learn to STAND — zero command, calm spawn, minimal stand reward. EPISODIC (unlike
+    the walk env): a fall terminates and resets to the upright spawn, giving the survival pressure
+    that makes standing the optimum (and lots of upright restarts). This mirrors the config that
+    stood cleanly (stand phase-1). Warm-start the walk phase from this once it holds a solid stand."""
 
     rewards: StandRewardsCfg = StandRewardsCfg()
     events: StandEventsCfg = StandEventsCfg()
+    terminations: EpisodicTerminationsCfg = EpisodicTerminationsCfg()  # fall -> reset (survival = stand)
 
     def __post_init__(self):
         super().__post_init__()
