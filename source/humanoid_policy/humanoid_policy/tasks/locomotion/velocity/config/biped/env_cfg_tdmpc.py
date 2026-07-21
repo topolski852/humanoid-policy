@@ -47,35 +47,77 @@ class NonEpisodicTerminationsCfg:
 
 
 @configclass
-class GatedRewardsCfg:
-    """Stability-first reward: one uprightness-gated locomotion term dominates, plus small
-    ungated shaping. All reward is forfeited while not upright (see mdp.gated_locomotion)."""
+class HybridRewardsCfg:
+    """HYBRID TD-MPC2 walk reward = the uprightness-GATED locomotion core (keeps the short-horizon
+    planner from banking reward while tipping) + a small UNGATED upright bonus (cold-start gradient
+    where the multiplicative gate is flat) + the proven PPO GAIT terms (feet_air_time / feet_slide,
+    which teach the *stride* the velocity reward doesn't) + torso STABILITY / IMU-smoothness terms
+    (low gyro+accel noise, smooth sim-to-real motion). Weights start from the PPO/Eureka walk (which
+    walks on THIS robot) but scaled so the multiplicative gate stays the dominant positive. Stability
+    weights are deliberately MODEST for the first run so they shape the gait without killing it —
+    raise them once walking emerges (smoothness > raw progress once it's on its feet).
 
-    # the whole task, gated by standing×upright (per-step in [0,1])
+    Design rules: (a) the gated core is the main positive; (b) additive NEGATIVE penalties can only
+    subtract, so they can't be farmed while falling; (c) additive POSITIVE shaping (upright bonus,
+    feet_air_time) is kept small/moderate so it can't out-earn "actually walk while upright"."""
+
+    # --- CORE: uprightness-gated linear-speed locomotion (dominant positive, per-step [0,1]) ---
     stand_walk = RewTerm(
         func=mdp.gated_locomotion,
         weight=1.0,
         params={
             "command_name": "base_velocity",
-            "tracking_std": 0.25,
+            "tracking_std": 0.25,          # unused by the linear-speed move term (kept for signature)
             "stand_height": _STAND_H,
-            # smooth standing-gate decay below stand_height (positive margin => real gradient to
-            # lift the base out of a sag; the sim's negative stand_height made the old auto-margin
-            # <0 -> hard 0/1 gate with no gradient -> stable-crouch trap).
-            "stand_margin": 0.12,
+            "stand_margin": 0.12,          # smooth height-gate gradient (positive margin)
             "upright_min": 0.8,
-            # 0.75: standing-still only earns the 0.25 baseline; tracking the command earns the rest,
-            # so walking pays far more than parking (escape the stand-still local optimum).
-            "move_weight": 0.75,
+            "move_weight": 0.75,           # standing-still earns only the 0.25 baseline; moving earns the rest
         },
     )
-    # NO explicit fall penalty: matching TD-MPC2/HumanoidBench, a fall is disincentivized purely by
-    # the gate zeroing reward while toppled + the value bootstrap being masked to 0 at the terminal
-    # (see the hard-collapse termination below). An explicit -1 penalty + the 45deg termination was
-    # what made "survive by standing still" optimal — removed.
-    # light ungated shaping for smoothness / joint safety (don't fight the gate)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+
+    # --- COLD-START: small UNGATED upright bonus. Gives a smooth gradient toward vertical from any
+    # tilt (where standing×upright is ~0 and flat), so a fallen/from-scratch policy can learn to
+    # stand back up. Small so it can't become a "stand still" attractor. ---
+    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.15)
+
+    # --- GAIT (borrowed from the PPO walk that works on this robot): reward lifting the swing foot,
+    # punish a planted foot sliding. This supplies the "how to step" signal the speed term lacks. ---
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
+            "threshold": 0.4,
+        },
+    )
+    feet_slide = RewTerm(
+        func=mdp.feet_slide,
+        weight=-0.07,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
+        },
+    )
+
+    # --- STABILITY / IMU SMOOTHNESS (reduce gyro roll/pitch rate + accel noise; smooth motion).
+    # Modest to start so they don't suppress the natural gait sway into standing still. ---
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)          # torso roll/pitch rate (gyro noise)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.5)  # keep torso level (IMU tilt)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.1)             # vertical bounce
+    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=-0.02)  # accelerometer smoothness
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)        # jerk / micro-movement
+
+    # --- SAFETY ---
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)
+    undesired_contacts = RewTerm(                                          # base/hip/knee on the ground = fallen
+        func=mdp.undesired_contacts,
+        weight=-0.3,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip_.*", ".*_knee_.*"]),
+            "threshold": 1.0,
+        },
+    )
 
 
 @configclass
@@ -101,7 +143,7 @@ class HumanoidBipedTdmpcEnvCfg(HumanoidBipedEnvCfg):
     """Biped walk env with the stability-gated reward + gentler DR — for the TD-MPC2 trainer.
     PHASE 2 of the curriculum (full commands): warm-start from a phase-1 stand checkpoint."""
 
-    rewards: GatedRewardsCfg = GatedRewardsCfg()
+    rewards: HybridRewardsCfg = HybridRewardsCfg()
     events: GentleEventsCfg = GentleEventsCfg()
     terminations: NonEpisodicTerminationsCfg = NonEpisodicTerminationsCfg()
 

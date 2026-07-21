@@ -99,6 +99,17 @@ def gated_locomotion(
     return stand_gate * small_control * ((1.0 - move_weight) + move_weight * move)
 
 
+def upright_posture(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """UNGATED torso-uprightness bonus in [0,1] (1 = torso vertical, 0 = on its side). This is the
+    cold-start fix: the multiplicative ``stand_gate`` (standing×upright) is ~0 with a near-flat
+    gradient when the robot is down, so a from-scratch / fallen policy gets no signal to stand back
+    up. Added as a small *additive* term, this gives a smooth monotonic gradient toward vertical
+    from ANY tilt. It also rewards holding a steady vertical torso (lower IMU tilt) -> smoother
+    motion / better sim-to-real. Kept small so walking (the gated move term) still dominates."""
+    asset = env.scene[asset_cfg.name]
+    return torch.clamp(-asset.data.projected_gravity_b.torch[:, 2], 0.0, 1.0)
+
+
 def base_lin_accel_xy_l2(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

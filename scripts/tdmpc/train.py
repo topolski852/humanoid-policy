@@ -83,6 +83,47 @@ from env_adapter import TdmpcVecEnv  # noqa: E402  (sibling module, script dir o
 from trainer import TdmpcTrainer  # noqa: E402
 
 
+def _dump_run_config(log_dir, args_cli, agent_cfg, env_cfg):
+    """Write a durable per-run record (config + reward weights + git commit) so every run in
+    logs/tdmpc/ self-documents exactly what produced it. Never breaks the run (best-effort)."""
+    import json
+    import subprocess
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        commit = "unknown"
+    try:
+        rewards = {}
+        for name, term in vars(env_cfg.rewards).items():
+            if hasattr(term, "weight"):
+                fn = getattr(getattr(term, "func", None), "__name__", "?")
+                rewards[name] = {"weight": float(term.weight), "func": fn,
+                                 "params": {k: str(v) for k, v in (getattr(term, "params", {}) or {}).items()}}
+        record = {
+            "git_commit": commit,
+            "task": args_cli.task,
+            "seed": args_cli.seed,
+            "num_envs": args_cli.num_envs,
+            "max_env_steps": agent_cfg.max_env_steps,
+            "updates_per_step": agent_cfg.updates_per_step,
+            "plan_collection": agent_cfg.plan_collection,
+            "tdmpc2_square": agent_cfg.use_tdmpc2_square,
+            "compile": bool(getattr(agent_cfg, "compile", False)),
+            "init_checkpoint": args_cli.init_checkpoint,
+            "latent_dim": agent_cfg.latent_dim, "mlp_dim": agent_cfg.mlp_dim,
+            "horizon": agent_cfg.horizon, "discount": agent_cfg.discount,
+            "actuator_model": os.environ.get("HUMANOID_ACTUATOR_MODEL"),
+            "rewards": rewards,
+        }
+        with open(os.path.join(log_dir, "run_config.json"), "w") as f:
+            json.dump(record, f, indent=2)
+        print(f"[tdmpc] wrote run_config.json (commit {commit}, {len(rewards)} reward terms)")
+    except Exception as e:
+        print(f"[tdmpc] run_config dump skipped: {e}")
+
+
 def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
@@ -136,6 +177,8 @@ def main():
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.abspath(os.path.join("logs", "tdmpc", agent_cfg.experiment_name, ts))
     print(f"[tdmpc] logging to {log_dir}")
+    os.makedirs(log_dir, exist_ok=True)
+    _dump_run_config(log_dir, args_cli, agent_cfg, env_cfg)
 
     trainer = TdmpcTrainer(agent_cfg, env, agent, buffer, log_dir)
     trainer.train()
