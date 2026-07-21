@@ -178,9 +178,52 @@ class StandEventsCfg(GentleEventsCfg):
 
 
 @configclass
-class HumanoidBipedTdmpcStandEnvCfg(HumanoidBipedTdmpcEnvCfg):
-    """PHASE 1: same gated reward, but commanded to STAND (zero velocity) with a calm spawn."""
+class StandRewardsCfg:
+    """PHASE-1 STAND reward: hold the upright spawn. Deliberately has NO gait terms — feet_air_time
+    rewards an airborne foot, which a fallen robot games by lying down and waving a leg (observed).
+    Here every term aligns with "stay vertical and still", so there is nothing to farm by falling:
+    the gated core (with cmd=0) rewards upright+still, a strong ungated upright bonus supplies the
+    gradient to stand up, and the stability penalties (which fight the WALK gait) are exactly right
+    for standing (penalizing motion == hold still). Falling is punished by undesired_contacts + the
+    gate collapsing. Once this stands solidly, warm-start the WALK phase from it."""
 
+    stand_hold = RewTerm(
+        func=mdp.gated_locomotion,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "tracking_std": 0.25,
+            "stand_height": _STAND_H,
+            "stand_margin": 0.12,
+            "upright_min": 0.8,
+            "move_weight": 0.75,   # cmd=0 -> move term rewards stillness
+        },
+    )
+    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.4)   # strong "be vertical" gradient
+    # stability / smoothness — for STANDING these correctly mean "hold still & level"
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.5)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.1)
+    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=-0.02)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    # safety
+    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)
+    undesired_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-0.3,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip_.*", ".*_knee_.*"]),
+            "threshold": 1.0,
+        },
+    )
+
+
+@configclass
+class HumanoidBipedTdmpcStandEnvCfg(HumanoidBipedTdmpcEnvCfg):
+    """PHASE 1: learn to STAND — zero command, calm spawn, clean stand reward (no gameable gait
+    terms). Warm-start the walk phase from this once it holds a solid upright stand."""
+
+    rewards: StandRewardsCfg = StandRewardsCfg()
     events: StandEventsCfg = StandEventsCfg()
 
     def __post_init__(self):
