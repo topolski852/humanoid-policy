@@ -170,9 +170,9 @@ class TdmpcTrainer:
                 self._spd_sum = None
                 self._spd_n = 0
                 self.writer.add_scalar("collect/ground_speed_mps", mean_spd, total)
+                self.writer.add_scalar("collect/mean_episode_len", mean_len, total)  # key signal (episodic stand)
                 if self.cmd_curriculum:
                     self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
-                    self.writer.add_scalar("curriculum/mean_ep_len", mean_len, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
                       f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
