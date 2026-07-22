@@ -110,6 +110,23 @@ def upright_posture(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEnt
     return torch.clamp(-asset.data.projected_gravity_b.torch[:, 2], 0.0, 1.0)
 
 
+def feet_stance_width(
+    env: ManagerBasedRLEnv,
+    target_width: float = 0.25,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_ankle_roll"),
+) -> torch.Tensor:
+    """Reward a WIDE base of support: horizontal foot-to-foot distance, ramped 0->1 up to
+    ``target_width``. A biped with its feet together has almost no lateral margin and tips at the
+    slightest roll; a wider, planted stance is far more stable. The robot's default pose has
+    hip_roll=0 (feet under the hips = narrow), and nothing else rewards widening, so it only finds
+    the stable stance by luck. This term gives it a direct gradient to abduct the hips and plant
+    its feet apart -- the stance a good stand uses."""
+    asset = env.scene[asset_cfg.name]
+    foot_xy = asset.data.body_pos_w.torch[:, asset_cfg.body_ids, :2]     # (N, 2, 2) horizontal pos of both feet
+    sep = (foot_xy[:, 0, :] - foot_xy[:, 1, :]).norm(dim=-1)             # (N,) foot-to-foot horizontal distance
+    return torch.clamp(sep / target_width, 0.0, 1.0)
+
+
 def base_lin_accel_xy_l2(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

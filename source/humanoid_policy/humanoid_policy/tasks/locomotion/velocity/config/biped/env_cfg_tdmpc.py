@@ -201,6 +201,14 @@ class StandRewardsCfg:
         },
     )
     upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.4)     # strong "be vertical" gradient
+    # WIDER base of support: reward foot separation up to 0.25 m (neutral is ~0.17 m). A narrow
+    # stance tips at the slightest roll; observed failures collapse the feet together. Gives a
+    # gradient to abduct the hips and plant the feet apart -> the stable stance.
+    stance_width = RewTerm(
+        func=mdp.feet_stance_width,
+        weight=0.3,
+        params={"target_width": 0.25, "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll")},
+    )
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-1.0)  # episodic: falling costs
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)   # light jerk penalty only
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)  # joint safety

@@ -33,6 +33,18 @@ base height is near standing. For the STAND phase we simply drop it (nothing to 
 - **Stability / IMU (run 6 rationale):** the deployed PPO walk worked because it prioritized stability; we'd stripped `ang_vel_xy`/`flat_orientation`/`base_accel`/smoothness. Re-added (modest) for low IMU noise + smooth sim-to-real. Caution: keep modest so they don't suppress the gait into standing.
 - **Sample budget:** official TD-MPC2 default is 10M steps/task (not the 2M I'd mis-cited); PPO needed 590M. 1M was ~10% — under-trained.
 
+## Run 8/9 — STAND v2/v3
+- **v2** (episodic + minimal reward + TD-M(PC)²): WORKED far better than v1 — return positive, ep_len
+  climbed ~18→~400. But PLATEAUED at a *mediocre* stand: per-step reward pinned ~0.055 (return and
+  ep_len a perfect scalar match = constant per-step = frozen static posture, no active balancing /
+  no posture improvement). Visual: some stand, others fall when the FEET COLLAPSE TOGETHER (narrow
+  base). Neutral foot sep measured = 0.17 m; successful ones abduct wider.
+- **v3** (this run): + `feet_stance_width` reward (w0.3, target 0.25 m > neutral 0.17) to give a
+  gradient toward a WIDE base of support. Added `collect/stance_width_m` telemetry. Watch: stance
+  climbs toward 0.25 AND ep_len→500 with per-step reward RISING (curves decoupling = real posture
+  improvement, not just surviving longer). Tunables if needed: stance target/weight, tilt-termination
+  angle (45°→25° to force taller), upright_bonus weight.
+
 ## Run 7 — STAND phase (crawl→stand→walk, step 1)
 Decision (user): get a solid upright STAND first, then add walking. Clean stand reward
 (`StandRewardsCfg`): gated core w1.0 (cmd=0 → rewards upright+still) + upright_bonus w0.4 + the

@@ -40,6 +40,16 @@ class TdmpcTrainer:
             self._robot = None
         self._spd_sum = None
         self._spd_n = 0
+        # stance-width telemetry: horizontal distance between the two feet (ankle_roll bodies).
+        try:
+            names = list(self._robot.body_names)
+            self._foot_ids = [i for i, n in enumerate(names) if "ankle_roll" in n]
+            if len(self._foot_ids) != 2:
+                self._foot_ids = None
+        except Exception:
+            self._foot_ids = None
+        self._sw_sum = None
+        self._sw_n = 0
 
         # --- command curriculum (stand -> full walk, survival-gated) ---
         self.cmd_curriculum = bool(getattr(cfg, "cmd_curriculum", False))
@@ -106,6 +116,11 @@ class TdmpcTrainer:
                 spd = self._robot.data.root_lin_vel_w.torch[:, :2].norm(dim=1).mean()
                 self._spd_sum = spd if self._spd_sum is None else self._spd_sum + spd
                 self._spd_n += 1
+            if self._foot_ids is not None:
+                fp = self._robot.data.body_pos_w.torch[:, self._foot_ids, :2]
+                sw = (fp[:, 0, :] - fp[:, 1, :]).norm(dim=1).mean()
+                self._sw_sum = sw if self._sw_sum is None else self._sw_sum + sw
+                self._sw_n += 1
 
             ep_return += reward
             ep_len += 1
@@ -169,12 +184,16 @@ class TdmpcTrainer:
                 mean_spd = float((self._spd_sum / self._spd_n)) if self._spd_n > 0 else 0.0
                 self._spd_sum = None
                 self._spd_n = 0
+                mean_sw = float((self._sw_sum / self._sw_n)) if self._sw_n > 0 else 0.0
+                self._sw_sum = None
+                self._sw_n = 0
                 self.writer.add_scalar("collect/ground_speed_mps", mean_spd, total)
                 self.writer.add_scalar("collect/mean_episode_len", mean_len, total)  # key signal (episodic stand)
+                self.writer.add_scalar("collect/stance_width_m", mean_sw, total)     # foot separation (target 0.25)
                 if self.cmd_curriculum:
                     self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
-                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} {cmd_tag}"
+                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} stance={mean_sw:.3f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 # best-checkpoint on smoothed return
                 if self.ret_hist and mean_ret > self.best_return:
