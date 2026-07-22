@@ -187,6 +187,20 @@ def feet_air_time_positive_biped(
     reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
     return reward
 
+def feet_air_time_upright_gated(
+    env: ManagerBasedRLEnv, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """`feet_air_time_positive_biped` GATED by torso uprightness. The base term rewards a swing foot
+    being airborne; UNGATED, a fallen robot farms it by lying on its back and waving a leg in the
+    air (the run-6 reward hack we observed). Multiplying by uprightness (`-projected_gravity_b_z`,
+    clamped: ~1 when the torso is vertical, ~0 when it's on the ground) means only an UPRIGHT robot
+    taking a real step earns it -- a fallen robot's leg-wave scores ~0."""
+    air = feet_air_time_positive_biped(env, command_name, threshold, sensor_cfg)
+    upright = torch.clamp(-env.scene[asset_cfg.name].data.projected_gravity_b.torch[:, 2], 0.0, 1.0)
+    return air * upright
+
+
 def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize feet sliding.
 

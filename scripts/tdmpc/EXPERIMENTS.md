@@ -22,7 +22,12 @@ value-overoptimism divergence).
 | 7 | 07-21 | **STAND v1** — clean stand reward, cmd=0, calm spawn, NON-episodic, heavy penalty stack, no sq | from scratch, latent512, UTD 16, compile | **still slump −18** — pi_loss pinned 1.6 (overoptimism); 3/4 fall, last one hops one-footed. Deviated from the recipe that stood before. | revert to proven recipe |
 | 8 | 07-21 | **STAND v2** — EPISODIC (fall→reset) + minimal reward (gate+upright+term_pen+action_rate+dof) + **TD-M(PC)²** | from scratch, latent512, UTD 16, compile | **stands but MEDIOCRE plateau** — return +ve, ep_len ~18→~400, but per-step reward pinned ~0.055 (return≡ep_len perfect match = frozen static posture). Falls when FEET COLLAPSE TOGETHER (narrow base). Neutral foot-sep=0.17 m. | reward WIDER stance |
 | 9 | 07-21 | **STAND v3** — + `feet_stance_width` banded [0.23,0.30] (w0.3) | from scratch, latent512, UTD 16, compile, sq | **REGRESSED** — stance widened to ~0.23 (reward worked) but the extra term destabilized the value (pi_loss→−3.2); peaked ep_len 407 @160k then declined to ~220. Worse than v2. Wider base didn't help (maybe dynamically harder w/ actuator latency). | revert stance, tighten termination |
-| 10 | 07-21 | **STAND v4** — revert stance; TIGHTEN termination: tilt 45°→30°, crouch 15→12 cm | from scratch, latent512, UTD 16, compile, sq | pending | — |
+| 10 | 07-21 | **STAND v4** — revert stance; TIGHTEN termination: tilt 45°→30°, crouch 15→12 cm | from scratch, latent512, UTD 16, compile, sq | **SUCCESS (best stand)** — ep_len ~470/500 climbed+held; eval in STAND env = 0 falls/16, calm (rocking 0.084). Solid+calm FROM A CALM START. But NOT robust to harder/randomized spawns (flails in the walk env). Preserved stand_v4_best. | accept → WALK |
+| 11 | 07-22 | **WALK phase** — warm-start stand_v4; lean reward (gated core + upright + **feet_air_time UPRIGHTNESS-GATED** + feet_slide + action_rate + dof); non-episodic; dropped heavy stability stack (barbers the gait) | warm-start stand_v4, latent512, UTD 16, compile, sq | pending | — |
+
+Note: v5 (warm-start v4 + smoothness) was launched then ABORTED — its premise (calm the jitter)
+was based on a WALK-env eval artifact; in the stand env v4 is already calm. Skipped to WALK.
+Eval env matters: always pass `--task Walk-Humanoid-Policy-Biped-Tdmpc-Stand-v0` to watch a STAND.
 
 ### feet_air_time is GAMEABLE (run 6) — critical
 `feet_air_time_positive_biped` rewards the swing foot being airborne; it is NOT gated by

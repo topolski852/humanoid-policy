@@ -83,12 +83,14 @@ class HybridRewardsCfg:
     # --- COLD-START: small UNGATED upright bonus. Gives a smooth gradient toward vertical from any
     # tilt (where standing×upright is ~0 and flat), so a fallen/from-scratch policy can learn to
     # stand back up. Small so it can't become a "stand still" attractor. ---
-    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.15)
+    upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.3)
 
-    # --- GAIT (borrowed from the PPO walk that works on this robot): reward lifting the swing foot,
-    # punish a planted foot sliding. This supplies the "how to step" signal the speed term lacks. ---
+    # --- GAIT (the PPO walk terms) but feet_air_time is UPRIGHTNESS-GATED so a fallen robot can't
+    # farm airborne-foot reward by lying down and waving a leg (the run-6 hack). Only an upright
+    # robot taking a real step is rewarded. This supplies the "how to step" signal the speed term
+    # lacks; feet_slide punishes a planted foot dragging. ---
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
+        func=mdp.feet_air_time_upright_gated,
         weight=1.0,
         params={
             "command_name": "base_velocity",
@@ -105,24 +107,12 @@ class HybridRewardsCfg:
         },
     )
 
-    # --- STABILITY / IMU SMOOTHNESS (reduce gyro roll/pitch rate + accel noise; smooth motion).
-    # Modest to start so they don't suppress the natural gait sway into standing still. ---
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)          # torso roll/pitch rate (gyro noise)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.5)  # keep torso level (IMU tilt)
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.1)             # vertical bounce
-    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=-0.02)  # accelerometer smoothness
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)        # jerk / micro-movement
-
-    # --- SAFETY ---
-    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)
-    undesired_contacts = RewTerm(                                          # base/hip/knee on the ground = fallen
-        func=mdp.undesired_contacts,
-        weight=-0.3,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip_.*", ".*_knee_.*"]),
-            "threshold": 1.0,
-        },
-    )
+    # --- SAFETY / light smoothness only. The heavy stability stack (ang_vel/flat_orientation/
+    # base_accel/lin_vel_z/undesired_contacts) BARBERED the gait during learning (it suppresses the
+    # torso sway + weight-shift a step needs), so it's dropped for the walk-LEARNING phase -- add
+    # smoothness back once it walks, same as the stand plan. ---
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)        # light jerk penalty
+    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)       # joint safety
 
 
 @configclass
