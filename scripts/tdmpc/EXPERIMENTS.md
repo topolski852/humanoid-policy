@@ -24,6 +24,33 @@ value-overoptimism divergence).
 | 9 | 07-21 | **STAND v3** — + `feet_stance_width` banded [0.23,0.30] (w0.3) | from scratch, latent512, UTD 16, compile, sq | **REGRESSED** — stance widened to ~0.23 (reward worked) but the extra term destabilized the value (pi_loss→−3.2); peaked ep_len 407 @160k then declined to ~220. Worse than v2. Wider base didn't help (maybe dynamically harder w/ actuator latency). | revert stance, tighten termination |
 | 10 | 07-21 | **STAND v4** — revert stance; TIGHTEN termination: tilt 45°→30°, crouch 15→12 cm | from scratch, latent512, UTD 16, compile, sq | **SUCCESS (best stand)** — ep_len ~470/500 climbed+held; eval in STAND env = 0 falls/16, calm (rocking 0.084). Solid+calm FROM A CALM START. But NOT robust to harder/randomized spawns (flails in the walk env). Preserved stand_v4_best. | accept → WALK |
 | 11 | 07-22 | **WALK phase** — warm-start stand_v4; lean reward (gated core + upright + **feet_air_time UPRIGHTNESS-GATED** + feet_slide + action_rate + dof); non-episodic; dropped heavy stability stack (barbers the gait) | warm-start stand_v4, latent512, UTD 16, compile, sq | pending | — |
+| 12 | 07-22 | **WALK v5 / reward-C-pushmove** — `move_weight` 0.75→0.9 (force stepping) | warm stand_v4 (auto) | **won't-move plateau** — ep_len 500, return climbed to 5.3 but fwd speed stuck 0.05–0.10 (<0.15 floor); graded fitness **0.092** (honest fwd 0.012). Survive-in-place farms posture/survival; the weight bump did NOT break the equilibrium. Stopped PLATEAU_NONWALKING @1.47M. | curriculum (force motion via ramp), NOT reward-weight tweaks |
+| 13 | 07-22 | **curriculum-A** — survival-gated command ramp (cmd_scale 0.10→full) | warm best(0.092) | **ROBBED by supervisor race (see BUG)** — ran only **26k steps** yet at 16–17k it was the **ONLY run to actually MOVE (speed spiked to 0.39!)** before being killed. Supervisor read the PREVIOUS run's stale plateaued scalars, killed it, and re-graded reward-C (duplicate journal entry, bogus fitness 0.092). The curriculum spine never got a fair run. | re-run curriculum outside the race window |
+| 14 | 07-22 | **reward-A-stride** — widen `feet_air_time` band → [0.22, 0.45] | warm best(0.092) | **won't-move plateau (repeat of #12)** — ep_len ~484, return 5.5 plateaued, fwd 0.067 (<0.15). Widening the stride band has no mechanism to *initiate* stepping from a stand. Confirms reward-tweaks-from-stand ≠ walking. | curriculum lever, not more reward tweaks |
+
+### SUPERVISOR BUG — `_find_run_dir` robs runs launched near the previous grade (found 2026-07-22)
+`_find_run_dir(since)` (supervisor.py:208) picks the newest `tdmpc_biped/*` dir with **directory
+mtime ≥ launch−5s**. But grading the *previous* run writes `grade.json`/`eval_metrics.json` INTO the
+previous run's dir, bumping its mtime. If a new run launches while that write is within ~5 s of its
+t0 (the previous grade's Isaac eval overlaps the new launch), `_find_run_dir` returns the PREVIOUS
+dir during the new run's ~60 s Isaac boot → the supervisor reads the previous run's (plateaued)
+scalars → `evaluate_run` returns STOP → kills the new run at ~26 k steps → then **re-grades the
+previous checkpoint** (producing a duplicate journal entry). This robbed **curriculum-A** (idx 1):
+killed at 26 k, journaled with reward-C's run_dir + stop_reason `@1472512` + fitness 0.092.
+reward-A-stride survived only because its launch fell minutes after the prior grade (old mtime
+outside the −5 s window). Intermittent + timing-dependent → the CURRICULUM runs (which follow long
+plateaued reward runs whose grade overlaps the next launch) are the ones most often robbed.
+**Fix (operator — outside the advisor's allowed edits):** resolve run_dir from train.py's own
+`[tdmpc] logging to <dir>` stdout line (or a PID/sentinel file) and grade THAT dir, and/or exclude
+dirs that already contain `grade.json`. Until fixed, curriculum experiments may be silently skipped.
+
+**RESOLVED 2026-07-22:** replaced `_find_run_dir` with `_discover_run_dir` — primary = parse the
+`[tdmpc] logging to <dir>` stdout line (exact); fallback = newest dir NOT in a snapshot taken
+immediately before launch. Both make a stale/previous dir unreturnable regardless of its mtime.
+Verified live: curriculum-A2-retry (idx4) latched its own dir `19-27-25`. Also this run: raised
+`min_judge_steps` 800k→2M (runs are under-saturated ~1M; give every idea a real exploration window
+before any plateau call) and re-queued the curriculum spine to run NEXT (it was the only direction
+to produce real forward motion, 0.39 m/s).
 
 Note: v5 (warm-start v4 + smoothness) was launched then ABORTED — its premise (calm the jitter)
 was based on a WALK-env eval artifact; in the stand env v4 is already calm. Skipped to WALK.

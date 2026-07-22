@@ -44,9 +44,9 @@ without idling: `... run_supervisor.sh --max_wins 99`.
 ## Start the Claude advisor (optional, Layer 2)
 In a separate detached Claude Code session on this machine:
 ```
-/loop 3h /tdmpc-advisor
+/loop 6h /tdmpc-advisor
 ```
-It wakes every 3 h, reviews the journal, and appends/aborts. Safe to skip entirely.
+It wakes every 6 h, reviews the journal, and appends/aborts. Safe to skip entirely.
 
 ## Monitor (from anywhere, read-only — do NOT open tensorboard while training runs the GPU)
 ```bash
@@ -84,7 +84,7 @@ step for it.)
 - `--max_wins N` (default 3) — idle-at-cap threshold; raise to keep improving all week.
 - `--max_runs N` (default 40) — hard safety cap.
 - `--max_env_steps N` (default 10_000_000) — per-run budget (~12.5 h); early-stop cuts bad runs sooner.
-- `--min_judge_steps N` (default 800_000) — grace before plateau/regression rules apply.
+- `--min_judge_steps N` (default 2_000_000) — grace before plateau/regression rules apply (runs under-saturated ~1M).
 - Queue: append specs to `scripts/tdmpc/queue.jsonl` (never edit/reorder existing lines).
 
 ## Files

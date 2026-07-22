@@ -61,7 +61,11 @@ DEF_MAX_ENV_STEPS = 10_000_000     # official TD-MPC2 per-task budget
 DEF_POLL_SECS = 120
 DEF_MAX_WINS = 3                   # idle-at-cap: stop after this many genuine wins
 DEF_MAX_RUNS = 40                  # hard safety cap on total runs
-DEF_MIN_JUDGE_STEPS = 800_000      # don't apply plateau/regression rules before this (per EXPERIMENTS)
+DEF_MIN_JUDGE_STEPS = 2_000_000    # don't apply plateau/regression rules before this. Runs are
+                                   # under-saturated at ~1M (they explore/reshape then break out), so
+                                   # give every idea a full 2M before any plateau call. Divergence
+                                   # (pi_loss blowup) is NOT gated by this — that's a broken run, not
+                                   # under-exploration.
 DEF_STALE_SECS = 2400              # TB hasn't advanced in this long -> treat run as hung
 DEF_CRASH_RETRIES = 2             # relaunch a crashed training run this many times
 
@@ -205,11 +209,31 @@ def _terminate(proc: subprocess.Popen) -> None:
         pass
 
 
-def _find_run_dir(since: float) -> str | None:
-    """The logs/tdmpc/tdmpc_biped/<ts>/ dir train.py just created (newest, mtime >= launch)."""
-    cands = [d for d in glob.glob(os.path.join(EXPERIMENT_DIR, "*"))
-             if os.path.isdir(d) and os.path.getmtime(d) >= since - 5]
-    return sorted(cands, key=os.path.getmtime)[-1] if cands else None
+def _run_dir_from_log(logpath: str) -> str | None:
+    """Parse train.py's '[tdmpc] logging to <abs_dir>' stdout line -> the EXACT dir it created."""
+    try:
+        with open(logpath) as f:
+            for line in f:
+                if "logging to " in line:
+                    d = line.split("logging to ", 1)[1].strip()
+                    if os.path.isdir(d):
+                        return d
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _discover_run_dir(logpath: str, pre_existing: set) -> str | None:
+    """The run dir THIS launch created. Primary: the 'logging to' line (exact). Fallback: the newest
+    EXPERIMENT_DIR entry that did NOT exist before launch. Both avoid the mtime race where grading/
+    pruning the PREVIOUS run bumps its dir's mtime and makes it look 'newest' — which previously
+    locked a run's monitor onto the prior run's already-plateaued TB and instant-killed it."""
+    d = _run_dir_from_log(logpath)
+    if d:
+        return d
+    new = [x for x in glob.glob(os.path.join(EXPERIMENT_DIR, "*"))
+           if os.path.isdir(x) and x not in pre_existing]
+    return sorted(new, key=os.path.getmtime)[-1] if new else None
 
 
 def _latest_ckpt(run_dir: str) -> str | None:
@@ -269,8 +293,9 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
     _log(f"  cmd: {' '.join(cmd)}")
     _log(f"  stdout -> {logpath}")
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
+    # snapshot existing run dirs BEFORE launch so _discover_run_dir can exclude them (race fix)
+    pre_existing = set(glob.glob(os.path.join(EXPERIMENT_DIR, "*")))
     logf = open(logpath, "w")
-    t0 = time.time()
     proc = subprocess.Popen(cmd, env=env, cwd=REPO_ROOT, stdout=logf, stderr=subprocess.STDOUT,
                             start_new_session=True)
 
@@ -282,13 +307,15 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
             if rc is not None:
                 # process exited on its own: natural finish (rc 0) or crash (rc != 0)
                 if run_dir is None:
-                    run_dir = _find_run_dir(t0)
+                    run_dir = _discover_run_dir(logpath, pre_existing)
                 if rc == 0:
                     return run_dir, "training finished (budget reached)", "stopped"
                 return run_dir, f"CRASH exit={rc}", "crash"
 
             if run_dir is None:
-                run_dir = _find_run_dir(t0)
+                run_dir = _discover_run_dir(logpath, pre_existing)
+                if run_dir:
+                    _log(f"  run dir: {run_dir}")
                 time.sleep(cfg.poll_secs)
                 continue
 
