@@ -91,11 +91,11 @@ class HybridRewardsCfg:
     # lacks; feet_slide punishes a planted foot dragging. ---
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_upright_gated,
-        weight=1.0,
+        weight=1.5,   # credited only at foot-strike (sparse), so a bit stronger than the continuous version
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
-            "threshold": 0.4,
+            "air_lo": 0.20, "air_hi": 0.40, "air_margin": 0.15,   # target step air-time band (s)
         },
     )
     feet_slide = RewTerm(

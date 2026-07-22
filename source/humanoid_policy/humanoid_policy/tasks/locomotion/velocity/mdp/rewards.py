@@ -188,17 +188,26 @@ def feet_air_time_positive_biped(
     return reward
 
 def feet_air_time_upright_gated(
-    env: ManagerBasedRLEnv, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg,
+    env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg,
+    air_lo: float = 0.20, air_hi: float = 0.40, air_margin: float = 0.15,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """`feet_air_time_positive_biped` GATED by torso uprightness. The base term rewards a swing foot
-    being airborne; UNGATED, a fallen robot farms it by lying on its back and waving a leg in the
-    air (the run-6 reward hack we observed). Multiplying by uprightness (`-projected_gravity_b_z`,
-    clamped: ~1 when the torso is vertical, ~0 when it's on the ground) means only an UPRIGHT robot
-    taking a real step earns it -- a fallen robot's leg-wave scores ~0."""
-    air = feet_air_time_positive_biped(env, command_name, threshold, sensor_cfg)
+    """Reward a COMPLETED, upright STEP -- lift AND plant, not lift-and-hold. Credited ONLY at the
+    instant a foot lands (``first_contact``), so **holding a foot in the air earns nothing until it
+    plants** -- it cannot be farmed by standing on one leg (unlike ``feet_air_time_positive_biped``,
+    which pays continuously while single-stance). The just-completed step's air time is scored by a
+    BAND [air_lo, air_hi] that decays outside: a too-short shuffle OR a foot held up too long both
+    score low; only a normal-duration step (~0.2-0.4 s) scores ~1 -- so it can't earn more by keeping
+    the foot up longer (that side is penalized). Gated by torso uprightness (fallen -> ~0, killing the
+    run-6 lie-down-and-wave-a-leg hack) and by a non-trivial command."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt).torch[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time.torch[:, sensor_cfg.body_ids]
+    step_quality = _tolerance(last_air_time, lower=air_lo, upper=air_hi, margin=air_margin)  # (N, n_feet)
+    reward = torch.sum(step_quality * first_contact, dim=1)                     # only the foot that just landed
+    reward = reward * (torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1)
     upright = torch.clamp(-env.scene[asset_cfg.name].data.projected_gravity_b.torch[:, 2], 0.0, 1.0)
-    return air * upright
+    return reward * upright
 
 
 def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
