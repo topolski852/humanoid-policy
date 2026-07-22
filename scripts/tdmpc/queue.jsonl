@@ -1,0 +1,23 @@
+# TD-MPC2 walk experiment queue — one JSON spec per line; '#'/blank lines ignored.
+# The supervisor runs these in order, each warm-started from the best genuine walker so far
+# ("warm_start":"best"; falls back to _preserved/stand_v4_best.pt until the first win).
+# Spec fields:
+#   name         short id (used in log filenames + journal)
+#   warm_start   "best" | "stand_v4" | "scratch" | "<path-to.pt>"
+#   variant      train.py --variant (default "walk-biped-tdmpc")
+#   flags        extra train.py CLI args (list of strings), e.g. the command curriculum
+#   overrides    dotted-path env_cfg patches (ONLY existing reward/termination terms — adding a
+#                brand-new reward term needs a Python edit to HybridRewardsCfg, not an override)
+#   max_env_steps  per-run budget (default 10_000_000); early-stop rules cut bad runs sooner
+#   notes        why — copied into the journal
+# Interleaves the two families: command-curriculum runs and reward-weight tweaks. The Claude
+# advisor appends new specs below reacting to observed failure modes (see advisor_prompt.md).
+# v5 reorder (2026-07-22): the live run confirmed the "upright but won't step / standing is a free
+# optimum" failure, so reward-C-pushmove (attack that root cause) runs FIRST, curriculum second.
+{"name": "reward-C-pushmove", "warm_start": "stand_v4", "variant": "walk-biped-tdmpc", "overrides": {"rewards.stand_walk.params.move_weight": 0.9}, "notes": "V5 run 1: shift the gated core reward toward MOVING (0.75->0.9) so standing still earns less -> forces stepping. Direct fix for the confirmed 'won't step' plateau. Warm-start the clean stand."}
+{"name": "curriculum-A", "warm_start": "best", "variant": "walk-biped-tdmpc", "flags": ["--cmd_curriculum", "--cmd_survive_frac", "0.35"], "notes": "SPINE: survival-gated command ramp 0->full. Ramp speed only once it survives."}
+{"name": "reward-A-stride", "warm_start": "best", "variant": "walk-biped-tdmpc", "overrides": {"rewards.feet_air_time.params.air_hi": 0.45, "rewards.feet_air_time.params.air_lo": 0.22}, "notes": "Widen the foot-strike air-time band toward a longer stride (was 0.20-0.40)."}
+{"name": "curriculum-B-slow", "warm_start": "best", "variant": "walk-biped-tdmpc", "flags": ["--cmd_curriculum", "--cmd_survive_frac", "0.45", "--cmd_ramp_interval", "80000"], "notes": "Slower, stricter curriculum: prove survival harder (0.45) and ramp less often before speeding up."}
+{"name": "reward-B-noslip", "warm_start": "best", "variant": "walk-biped-tdmpc", "overrides": {"rewards.feet_slide.weight": -0.12, "rewards.upright_bonus.weight": 0.4}, "notes": "Punish foot drag harder + hold posture more upright (the run 3-4 'leaning fakes velocity' fix)."}
+{"name": "curriculum-C-frombest", "warm_start": "best", "variant": "walk-biped-tdmpc", "flags": ["--cmd_curriculum", "--cmd_survive_frac", "0.40"], "notes": "Re-run the curriculum from the best walker so far (not the stand) to push speed higher from a moving base."}
+{"name": "reward-D-smooth", "warm_start": "best", "variant": "walk-biped-tdmpc", "overrides": {"rewards.action_rate_l2.weight": -0.03}, "notes": "If it walks but jitters: mild extra jerk penalty on the existing action_rate term (keep small so it doesn't barber the gait)."}

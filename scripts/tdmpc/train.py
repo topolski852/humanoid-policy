@@ -45,6 +45,12 @@ parser.add_argument("--cmd_survive_frac", type=float, default=None,
                     help="Curriculum: widen the command when mean ep length > this * max (default 0.35).")
 parser.add_argument("--cmd_ramp_interval", type=int, default=None,
                     help="Curriculum: env-steps between ramp checks (default 50000).")
+parser.add_argument("--overrides", type=str, default=None,
+                    help="Path to a JSON of dotted-path env_cfg patches (e.g. "
+                         '{"rewards.feet_air_time.weight": 1.5, '
+                         '"terminations.base_orientation.params.limit_angle": 0.61}). Applied after '
+                         "parse_env_cfg so the autonomous supervisor can inject per-experiment "
+                         "reward/termination changes without editing Python. Recorded in run_config.json.")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -83,6 +89,37 @@ from env_adapter import TdmpcVecEnv  # noqa: E402  (sibling module, script dir o
 from trainer import TdmpcTrainer  # noqa: E402
 
 
+def _apply_overrides(env_cfg, overrides_path):
+    """Patch env_cfg in place from a JSON of dotted-path -> value. Each key walks nested
+    configclass attributes and/or dict entries (e.g. `rewards.feet_air_time.params.air_hi`,
+    where `.params` is a dict). Lists become tuples for range fields. Best-effort per key so a
+    typo skips that patch loudly rather than killing the run. Returns the applied dict."""
+    import json
+    with open(overrides_path) as f:
+        patches = json.load(f)
+    applied = {}
+    for path, value in patches.items():
+        if isinstance(value, list):
+            value = tuple(value)
+        segs = path.split(".")
+        cur = env_cfg
+        try:
+            for seg in segs[:-1]:
+                cur = cur[seg] if isinstance(cur, dict) else getattr(cur, seg)
+            last = segs[-1]
+            if isinstance(cur, dict):
+                cur[last] = value
+            else:
+                if not hasattr(cur, last):
+                    raise AttributeError(f"{type(cur).__name__} has no attribute '{last}'")
+                setattr(cur, last, value)
+            applied[path] = value
+            print(f"[tdmpc] override applied: {path} = {value}")
+        except Exception as e:
+            print(f"[tdmpc] WARNING override SKIPPED: {path} = {value}  ({e})")
+    return applied
+
+
 def _dump_run_config(log_dir, args_cli, agent_cfg, env_cfg):
     """Write a durable per-run record (config + reward weights + git commit) so every run in
     logs/tdmpc/ self-documents exactly what produced it. Never breaks the run (best-effort)."""
@@ -112,6 +149,7 @@ def _dump_run_config(log_dir, args_cli, agent_cfg, env_cfg):
             "tdmpc2_square": agent_cfg.use_tdmpc2_square,
             "compile": bool(getattr(agent_cfg, "compile", False)),
             "init_checkpoint": args_cli.init_checkpoint,
+            "overrides": args_cli.overrides,
             "latent_dim": agent_cfg.latent_dim, "mlp_dim": agent_cfg.mlp_dim,
             "horizon": agent_cfg.horizon, "discount": agent_cfg.discount,
             "actuator_model": os.environ.get("HUMANOID_ACTUATOR_MODEL"),
@@ -127,6 +165,8 @@ def _dump_run_config(log_dir, args_cli, agent_cfg, env_cfg):
 def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
+    if args_cli.overrides is not None:
+        _apply_overrides(env_cfg, args_cli.overrides)
 
     agent_cfg = load_cfg_from_registry(args_cli.task, "tdmpc_cfg_entry_point")
     agent_cfg.num_envs = args_cli.num_envs
