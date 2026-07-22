@@ -30,6 +30,26 @@ uprightness, so a robot lying on its back with a leg up farms it. Fix for the WA
 the uprightness (multiply by stand_gate / only reward when upright), or only credit air-time when
 base height is near standing. For the STAND phase we simply drop it (nothing to farm by falling).
 
+## OVERNIGHT AUTONOMOUS RUN (2026-07-21 ~24:00 → 2026-07-22 noon) — protocol
+User granted autonomy to start/stop runs overnight. Goal: nail the STAND, then start WALK.
+Check ~every 0.8–1M steps. **Decision rule per check** (read full trajectory each time):
+- HEALTHY (ep_len ↑ or holding high, return ↑, pi_loss <2.5 stable, per-step reward ≥ v2's 0.055):
+  → CONTINUE.
+- SOLID STAND (ep_len ≥~450 sustained + per-step reward clearly > 0.055 + low speed): → preserve
+  ckpt, log, then start a WALK experiment (warm-start from the stand; feet_air_time uprightness-gated;
+  non-episodic; linear-speed reward).
+- REGRESSION (ep_len peaks then drops ≥25% for ≥300k) or DIVERGENCE (pi_loss >2.5): → STOP, change,
+  log, relaunch.
+- PLATEAU mediocre (ep_len flat <300, per-step ~0.055) : → STOP, tighten toward STILLNESS/upright, log.
+- CAN'T SURVIVE (ep_len <50 for ≥1M): bounds too tight → loosen (30°→35°), log.
+**Experiment queue (pick by failure mode):**
+1. v4 (running): tight termination 30° / 12 cm.
+2. STILLNESS (user's "shouldn't move almost at all"): tighten gated move_stand margin 0.5→~0.2 so
+   standing requires near-zero velocity; and/or tilt 30°→25°, height 12→10 cm.
+3. If regress/diverge: reduce value inflation — UTD 16→8 and/or trim reward magnitude.
+4. If solid stand: WALK phase (feet_air_time gated by uprightness — the run-6 hack fix).
+Every change is committed + logged in the table below with its outcome.
+
 ## Findings (why each reward change was made)
 - **Cold-start problem (run 5):** from scratch the multiplicative `standing×upright` gate is ~0 with a near-flat gradient when not upright → no signal to stand up → crouch. Fix: small *ungated* `upright_posture` term (smooth gradient to vertical) + keep the stand warm-start.
 - **No gait incentive (runs 3–4):** pure velocity reward specifies the goal, not the stride. Leaning/wobbling fakes some velocity. Fix: `feet_air_time` (reward foot-lift) + `feet_slide` (punish drag) — the proven PPO terms.
