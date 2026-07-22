@@ -209,8 +209,16 @@ class StandRewardsCfg:
     #  forcing a wide base didn't help. Instead, TightStandTerminationsCfg forces a taller/more
     #  upright stand by making a lean/crouch END the episode.)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-1.0)  # episodic: falling costs
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)   # light jerk penalty only
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)  # joint safety
+    # --- STILLNESS / IMU smoothness (v5): the v4 stand survives (0 falls) but JITTERS at the edge
+    # of the bounds (rocking/joint_vel/action_rate ~5x a calm stand). Now that it CAN stand, add
+    # modest smoothness penalties (safe to add here that weren't during from-scratch learning, since
+    # v5 WARM-STARTS a working stand) to calm the twitch into a still, smooth stand -> lower IMU
+    # noise / better sim-to-real. Kept modest so the ~0.055/step stand reward stays positive. ---
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)       # torso roll/pitch rate (gyro)
+    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=-0.02)  # accel smoothness
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.3)  # torso level (also fights the edge-lean)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.03)     # jerk / micro-twitch (up from -0.01)
 
 
 @configclass
