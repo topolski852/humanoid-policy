@@ -30,6 +30,10 @@ _STAND_H = (float(_STAND_BASE_HEIGHT) - 0.05) if _STAND_BASE_HEIGHT is not None 
 # pressure -> the robot leaned and let itself reset. Only a true collapse resets now.
 _HARD_COLLAPSE_H = (float(_STAND_BASE_HEIGHT) - 0.30) if _STAND_BASE_HEIGHT is not None else -10.0
 
+# Tight-stand height: only ~12 cm of crouch allowed before the episode ends (vs 15 cm), forcing a
+# TALLER stand. Used by the STAND phase's tightened terminations.
+_STAND_TIGHT_H = (float(_STAND_BASE_HEIGHT) - 0.12) if _STAND_BASE_HEIGHT is not None else -10.0
+
 
 @configclass
 class NonEpisodicTerminationsCfg:
@@ -201,19 +205,30 @@ class StandRewardsCfg:
         },
     )
     upright_bonus = RewTerm(func=mdp.upright_posture, weight=0.4)     # strong "be vertical" gradient
-    # WIDER base of support, but BANDED so it can't do the splits: reward peaks with foot separation
-    # in [0.23, 0.30] m and decays outside (neutral is ~0.17 m). Gives a gradient to abduct the hips
-    # into a stable stance, while actively penalizing over-widening (a very wide/low stance would
-    # otherwise be ultra-stable and farmed via survival).
-    stance_width = RewTerm(
-        func=mdp.feet_stance_width,
-        weight=0.3,
-        params={"lower": 0.23, "upper": 0.30, "margin": 0.10,
-                "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll")},
-    )
+    # (stance_width reward removed: adding it (v3) destabilized the value and regressed the stand;
+    #  forcing a wide base didn't help. Instead, TightStandTerminationsCfg forces a taller/more
+    #  upright stand by making a lean/crouch END the episode.)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-1.0)  # episodic: falling costs
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)   # light jerk penalty only
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)  # joint safety
+
+
+@configclass
+class TightStandTerminationsCfg:
+    """Tightened episodic terminations for the STAND phase: a LEAN past 30° (was 45°) or a crouch
+    past ~12 cm ends the episode + resets to the upright spawn. This makes "surviving" require
+    standing TALLER and more UPRIGHT — attacking the mediocre-lean ceiling where a robot passed the
+    lenient 45° bound while parked in a poor posture. Stand-env only; PPO / walk env untouched."""
+
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    base_orientation = DoneTerm(
+        func=mdp.bad_orientation,
+        params={"limit_angle": 0.52, "asset_cfg": SceneEntityCfg("robot", body_names="base")},  # 30° (was 0.78=45°)
+    )
+    base_height = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": _STAND_TIGHT_H, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
+    )
 
 
 @configclass
@@ -225,7 +240,7 @@ class HumanoidBipedTdmpcStandEnvCfg(HumanoidBipedTdmpcEnvCfg):
 
     rewards: StandRewardsCfg = StandRewardsCfg()
     events: StandEventsCfg = StandEventsCfg()
-    terminations: EpisodicTerminationsCfg = EpisodicTerminationsCfg()  # fall -> reset (survival = stand)
+    terminations: TightStandTerminationsCfg = TightStandTerminationsCfg()  # lean/crouch -> reset
 
     def __post_init__(self):
         super().__post_init__()
