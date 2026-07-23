@@ -51,7 +51,7 @@ class TdmpcTrainer:
         self._sw_sum = None
         self._sw_n = 0
 
-        # --- command curriculum (stand -> full walk, survival-gated) ---
+        # --- command curriculum (stand -> full walk, TRACKING-gated) ---
         self.cmd_curriculum = bool(getattr(cfg, "cmd_curriculum", False))
         if self.cmd_curriculum:
             self.cmd_term = env.uenv.command_manager.get_term("base_velocity")
@@ -61,9 +61,19 @@ class TdmpcTrainer:
             self.max_ep_len = int(env.uenv.max_episode_length)
             self.cmd_scale = float(cfg.cmd_scale_start)
             self._last_ramp = 0
+            # Gate the ramp on ACHIEVED TRACKING, not episode survival. The walk env is non-episodic
+            # so ep_len is pinned at max -> the old survival gate advanced the command all the way to
+            # full while the robot just stood still (real speed ~0.05 at full command). Instead only
+            # widen once the robot actually achieves >= cmd_track_frac of the CURRENT commanded speed,
+            # measured as body-velocity PROJECTED ONTO THE COMMAND DIRECTION over the moving-commanded
+            # envs (un-fakeable: ~0 for a rocker; correct sign for backward commands).
+            self.cmd_track_frac = float(getattr(cfg, "cmd_track_frac", 0.5))
+            self._ramp_proj_sum = None   # on-GPU sum of speed-along-command over moving env-steps
+            self._ramp_cmd_sum = None    # on-GPU sum of commanded speed over the same
+            self._ramp_cnt = None        # on-GPU count of moving env-steps
             self._apply_cmd_scale()
-            print(f"[curriculum] command ramp ON: start scale={self.cmd_scale:.2f}, "
-                  f"widen when mean_ep_len > {cfg.cmd_survive_frac:.2f}*{self.max_ep_len}")
+            print(f"[curriculum] command ramp ON (tracking-gated): start scale={self.cmd_scale:.2f}, "
+                  f"widen when achieved >= {self.cmd_track_frac:.2f} of commanded speed (along cmd dir)")
 
     def _apply_cmd_scale(self):
         R = self.cmd_term.cfg.ranges
@@ -116,6 +126,18 @@ class TdmpcTrainer:
                 spd = self._robot.data.root_lin_vel_w.torch[:, :2].norm(dim=1).mean()
                 self._spd_sum = spd if self._spd_sum is None else self._spd_sum + spd
                 self._spd_n += 1
+                # curriculum tracking (on-GPU masked sums; synced only at the ramp check): speed
+                # PROJECTED onto the command direction, over the envs actually commanded to move.
+                if self.cmd_curriculum:
+                    cmd_xy = self.cmd_term.command[:, :2]
+                    cmd_mag = cmd_xy.norm(dim=1)
+                    moving = (cmd_mag > 0.05).float()
+                    ach_xy = self._robot.data.root_lin_vel_b.torch[:, :2]
+                    proj = (ach_xy * cmd_xy).sum(dim=1) / cmd_mag.clamp(min=1e-3)  # speed along cmd dir
+                    p = (proj * moving).sum(); c = (cmd_mag * moving).sum(); n = moving.sum()
+                    self._ramp_proj_sum = p if self._ramp_proj_sum is None else self._ramp_proj_sum + p
+                    self._ramp_cmd_sum = c if self._ramp_cmd_sum is None else self._ramp_cmd_sum + c
+                    self._ramp_cnt = n if self._ramp_cnt is None else self._ramp_cnt + n
             if self._foot_ids is not None:
                 fp = self._robot.data.body_pos_w.torch[:, self._foot_ids, :2]
                 sw = (fp[:, 0, :] - fp[:, 1, :]).norm(dim=1).mean()
@@ -133,17 +155,29 @@ class TdmpcTrainer:
                 ep_return = torch.where(done, torch.zeros_like(ep_return), ep_return)
                 ep_len = torch.where(done, torch.zeros_like(ep_len), ep_len)
 
-            # --- command curriculum: widen the command when surviving well at the current level ---
+            # --- command curriculum: widen the command only once the robot actually TRACKS the
+            # current commanded speed (achieved-along-cmd >= cmd_track_frac * commanded). Survival
+            # (ep_len) is NOT used -- in the non-episodic env it's always max and would ramp on
+            # standing still. No len_hist.clear() here, so mean_episode_len stays smooth. ---
             if self.cmd_curriculum and self.cmd_scale < 1.0 and total - self._last_ramp >= cfg.cmd_ramp_interval:
                 self._last_ramp = total
-                if self.len_hist:
-                    mean_len = sum(self.len_hist) / len(self.len_hist)
-                    if mean_len > cfg.cmd_survive_frac * self.max_ep_len:
+                cnt = float(self._ramp_cnt) if self._ramp_cnt is not None else 0.0
+                if cnt > 0:
+                    ach = float(self._ramp_proj_sum) / cnt   # mean speed along command dir (moving envs)
+                    cmd = float(self._ramp_cmd_sum) / cnt     # mean commanded speed (moving envs)
+                    ratio = ach / cmd if cmd > 1e-3 else 0.0
+                    if ratio >= self.cmd_track_frac:
                         self.cmd_scale = min(1.0, self.cmd_scale + cfg.cmd_ramp_step)
                         self._apply_cmd_scale()
-                        self.len_hist.clear()  # must re-prove survival at the new, harder level
                         print(f"[curriculum] cmd_scale -> {self.cmd_scale:.2f} "
-                              f"(mean_ep_len {mean_len:.0f}/{self.max_ep_len})")
+                              f"(tracking {ach:.3f}/{cmd:.3f} = {ratio:.0%} >= {self.cmd_track_frac:.0%})")
+                    else:
+                        print(f"[curriculum] HOLD cmd_scale={self.cmd_scale:.2f} "
+                              f"(tracking {ach:.3f}/{cmd:.3f} = {ratio:.0%} < {self.cmd_track_frac:.0%} "
+                              f"-- learn to move before speeding up)")
+                self._ramp_proj_sum = None
+                self._ramp_cmd_sum = None
+                self._ramp_cnt = None
 
             obs_p, obs_c = nobs_p, nobs_c
             total += self.N
