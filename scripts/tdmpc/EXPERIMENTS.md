@@ -26,7 +26,9 @@ value-overoptimism divergence).
 | 11 | 07-22 | **WALK phase** — warm-start stand_v4; lean reward (gated core + upright + **feet_air_time UPRIGHTNESS-GATED** + feet_slide + action_rate + dof); non-episodic; dropped heavy stability stack (barbers the gait) | warm-start stand_v4, latent512, UTD 16, compile, sq | pending | — |
 | 12 | 07-22 | **WALK v5 / reward-C-pushmove** — `move_weight` 0.75→0.9 (force stepping) | warm stand_v4 (auto) | **won't-move plateau** — ep_len 500, return climbed to 5.3 but fwd speed stuck 0.05–0.10 (<0.15 floor); graded fitness **0.092** (honest fwd 0.012). Survive-in-place farms posture/survival; the weight bump did NOT break the equilibrium. Stopped PLATEAU_NONWALKING @1.47M. | curriculum (force motion via ramp), NOT reward-weight tweaks |
 | 13 | 07-22 | **curriculum-A** — survival-gated command ramp (cmd_scale 0.10→full) | warm best(0.092) | **ROBBED by supervisor race (see BUG)** — ran only **26k steps** yet at 16–17k it was the **ONLY run to actually MOVE (speed spiked to 0.39!)** before being killed. Supervisor read the PREVIOUS run's stale plateaued scalars, killed it, and re-graded reward-C (duplicate journal entry, bogus fitness 0.092). The curriculum spine never got a fair run. | re-run curriculum outside the race window |
-| 14 | 07-22 | **reward-A-stride** — widen `feet_air_time` band → [0.22, 0.45] | warm best(0.092) | **won't-move plateau (repeat of #12)** — ep_len ~484, return 5.5 plateaued, fwd 0.067 (<0.15). Widening the stride band has no mechanism to *initiate* stepping from a stand. Confirms reward-tweaks-from-stand ≠ walking. | curriculum lever, not more reward tweaks |
+| 14 | 07-22 | **reward-A-stride** — widen `feet_air_time` band → [0.22, 0.45] | warm best(0.092) | **won't-move plateau (repeat of #12)** — ep_len ~484, return 5.5 plateaued, fwd 0.067 (<0.15). Widening the stride band has no mechanism to *initiate* stepping from a stand. But graded **0.191** under MPPI eval (walk_gate 0.208) → new best_ckpt. Confirms reward-tweaks-from-stand ≠ walking. | curriculum lever, not more reward tweaks |
+| 15 | 07-22 | **curriculum-B-slow** — stricter ramp (survive_frac 0.45, ramp_interval 80k) | warm best(0.191) | **ROBBED by the race too** (2nd curriculum run lost) — journaled with reward-A-stride's run_dir + grade (fitness 0.191 @1018880). Confirmed the race hits *every* curriculum run (follows a plateaued reward run). Prompted the operator fix (`_discover_run_dir`) + min_judge_steps→2M + curriculum re-queued to run next. | run curriculum-A2-retry with race fixed |
+| 16 | 07-22 | **curriculum-A2-retry** (LIVE) — faithful curriculum-A retry, race fixed | warm **stand_v4** | **PROMISING, still ramping @280k** — race fix holds (own dir 19-27-25); `cmd_scale` ramped 0.10→**0.40**; speed peaks **0.46 m/s** but mean still ~0.05 (below 0.15 floor), ep_len 500, pi_loss −0.13 (healthy). First fair run of the curriculum spine — the one direction that produced real forward motion. Advisor 20:xx: healthy+early, no action. | let it run to ≥2M; watch mean speed clear 0.15 floor |
 
 ### SUPERVISOR BUG — `_find_run_dir` robs runs launched near the previous grade (found 2026-07-22)
 `_find_run_dir(since)` (supervisor.py:208) picks the newest `tdmpc_biped/*` dir with **directory
@@ -51,6 +53,16 @@ Verified live: curriculum-A2-retry (idx4) latched its own dir `19-27-25`. Also t
 `min_judge_steps` 800k→2M (runs are under-saturated ~1M; give every idea a real exploration window
 before any plateau call) and re-queued the curriculum spine to run NEXT (it was the only direction
 to produce real forward motion, 0.39 m/s).
+
+### CURRICULUM GATE FIX (operator, 2026-07-22, commit 4b4cacb)
+The command curriculum widened `cmd_scale` when `mean_ep_len > frac*max` — meaningless in the
+non-episodic walk env where ep_len is pinned at 500, so the command ran all the way to full while
+the robot stood still (real speed ~0.05 at cmd_scale 1.0; see curriculum-A2-retry). Now the ramp
+gates on ACHIEVED TRACKING: widen only once body velocity projected onto the command direction
+reaches `cmd_track_frac` (0.5) of the current commanded speed, over the moving-commanded envs
+(un-fakeable — ~0 for a rocker, correct sign for backward commands). Also removed the
+`len_hist.clear()` that produced the ep_len→0 dips at each ramp. Applies to the next curriculum run
+(curriculum-C-frombest); the live curriculum-A2-retry finishes on the old logic (already at full).
 
 Note: v5 (warm-start v4 + smoothness) was launched then ABORTED — its premise (calm the jitter)
 was based on a WALK-env eval artifact; in the stand env v4 is already calm. Skipped to WALK.
