@@ -41,12 +41,31 @@ The wrapper restarts the supervisor on any crash (backoff up to 5 min) until the
 sentinel appears. Forward supervisor args through the wrapper, e.g. to run the full week
 without idling: `... run_supervisor.sh --max_wins 99`.
 
-## Start the Claude advisor (optional, Layer 2)
-In a separate detached Claude Code session on this machine:
-```
-/loop 6h /tdmpc-advisor
-```
-It wakes every 6 h, reviews the journal, and appends/aborts. Safe to skip entirely.
+## Start the Claude layers (optional — training runs fine without them)
+Three tiers, each a separate **local** detached Claude Code session (they read/write local files;
+a cloud/scheduled agent can't). Both auto-editing tiers need `--dangerously-skip-permissions` so
+they don't prompt. Launch each in its own `tmux` window:
+
+- **Layer 2 — advisor (sensor, every 6 h):** diagnoses, appends queue specs, and files structured
+  machinery-bug alerts to `logs/tdmpc/ADVISOR_ALERTS.md`. Never edits code.
+  ```
+  cd /home/nse/humanoid/humanoid-policy && claude --dangerously-skip-permissions
+  /loop 6h /tdmpc-advisor
+  ```
+- **Layer 3 — engineer (actuator, every 24 h):** reads the advisor's alerts and, ONLY when a bug is
+  corroborated across **≥3 distinct runs**, applies + git-commits ONE scoped code fix
+  (trainer.py / grade_run.py / env_cfg_tdmpc.py — auto-applies on the next run). Compile-checked,
+  logged to `logs/tdmpc/ENGINEER_LOG.md`. supervisor.py bugs it leaves for you.
+  ```
+  cd /home/nse/humanoid/humanoid-policy && claude --dangerously-skip-permissions
+  /loop 24h /tdmpc-engineer
+  ```
+Both are safe to skip. If they die, training continues; you just lose adaptivity/self-healing.
+The three-tier split = **supervisor executes, advisor senses, engineer acts (only on corroborated
+bugs)** — so no single component can churn the code or wedge the GPU.
+
+**What to check on return:** `logs/tdmpc/ADVISOR_ALERTS.md` (bugs seen) and `logs/tdmpc/ENGINEER_LOG.md`
+(fixes made — each has a git commit you can review/revert).
 
 ## Monitor (from anywhere, read-only — do NOT open tensorboard while training runs the GPU)
 ```bash

@@ -72,17 +72,36 @@ ESCALATE. Each wake, run these canaries:
    climbing → the eval/grader may be broken, not just "not walking yet." ESCALATE.
 5. **Disk:** `du -sh logs/tdmpc` > ~50 GB → pruning may be failing on killed runs. Note it.
 
-## When a machinery check fires — ESCALATE, do not code-fix
-You are NOT authorized to edit the core machinery (see HARD RULES). Instead:
-1. **Append a prominent alert** to `logs/tdmpc/ADVISOR_ALERTS.md` — timestamp, which check fired,
-   the evidence (the actual numbers), and your one-paragraph proposed fix. This is what the operator
-   reads first on return.
-2. **Apply any SAFE queue-level mitigation** within your allowed edits — e.g. for the curriculum
+## When a machinery check fires — ESCALATE with a STRUCTURED alert (do not code-fix)
+You are NOT authorized to edit the core machinery (see HARD RULES). You are the SENSOR; a separate
+24h action-maker (`/tdmpc-engineer`) is the ACTUATOR. It only acts when the SAME bug is corroborated
+across **≥3 distinct runs**, so your alerts must be machine-countable. Each time a check fires,
+**append** a block to `logs/tdmpc/ADVISOR_ALERTS.md` in EXACTLY this format (one block per
+firing; the header line is what the engineer counts):
+
+```
+### CATEGORY — run idx<N> (<run-name>) @ <YYYY-MM-DD HH:MM>
+Evidence: <the actual numbers, e.g. cmd_scale=1.0 but mean ground_speed=0.05 (<0.15) @460k>
+Proposed fix: <one sentence — WHICH file + WHAT change, e.g. trainer.py: gate the command ramp on
+achieved ground_speed (>=50% of current commanded speed), not ep_len>
+```
+
+`CATEGORY` must be ONE of (use these exact tokens so the engineer can group them):
+`CURRICULUM_GATE`, `RACE`, `RUN_DIR_MISMATCH`, `GRADER_STUCK`, `DISK`, `OTHER`.
+`idx<N>` = the run's queue index from the journal (so the engineer counts DISTINCT runs, not repeat
+sightings of the same run). Only file ONE block per (category, run) — if you already alerted this
+category for this run in a prior wake, don't duplicate it; check the tail of ADVISOR_ALERTS.md first.
+
+Then:
+1. **Apply any SAFE queue-level mitigation** within your allowed edits — e.g. for the curriculum
    flaw you can't fix the trainer, but you CAN stop wasting runs on it: don't append more curriculum
-   specs until the operator fixes the gate; append reward-lever experiments instead.
-3. **Add a one-line pointer** in the EXPERIMENTS.md run table so it's in the journal too.
+   specs until it's fixed; append reward-lever experiments instead.
+2. **Add a one-line pointer** in the EXPERIMENTS.md run table so it's in the journal too.
 Do NOT `control.json`-abort a run that is still HEALTHY just because a machinery check fired — a
 flawed curriculum run may still be learning; escalate and let it finish unless it's clearly dead.
+If the fix is in `supervisor.py` (needs a process restart), still file the alert but tag the proposed
+fix `(OPERATOR — needs supervisor restart)`: the engineer won't touch supervisor.py, so it stays for
+the human.
 
 ## Choosing what to append (react to the observed failure mode)
 Look at the last few journal entries + the live run, then append 1–2 specs. Examples:
