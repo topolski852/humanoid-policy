@@ -35,6 +35,9 @@ parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=1000, help="measured policy steps (after warmup).")
 parser.add_argument("--warmup", type=int, default=50)
 parser.add_argument("--cmd_vx", type=float, default=0.3, help="fixed forward command (m/s).")
+parser.add_argument("--varied_commands", action="store_true",
+                    help="use the env's full OMNIDIRECTIONAL command range instead of fixed forward "
+                         "cmd_vx -> measures stability across directions (tracking error + off-command IMU).")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--task", type=str, default=None)
 parser.add_argument("--out", type=str, default=None, help="write metrics JSON here.")
@@ -63,12 +66,15 @@ from env_adapter import TdmpcVecEnv  # noqa: E402
 def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
-    r = env_cfg.commands.base_velocity.ranges
-    r.lin_vel_x = (args_cli.cmd_vx, args_cli.cmd_vx)
-    r.lin_vel_y = (0.0, 0.0)
-    r.ang_vel_z = (0.0, 0.0)
-    env_cfg.commands.base_velocity.rel_standing_envs = 0.0
-    env_cfg.commands.base_velocity.heading_command = False
+    if args_cli.varied_commands:
+        env_cfg.commands.base_velocity.heading_command = False   # keep the env's full omni range
+    else:
+        r = env_cfg.commands.base_velocity.ranges
+        r.lin_vel_x = (args_cli.cmd_vx, args_cli.cmd_vx)
+        r.lin_vel_y = (0.0, 0.0)
+        r.ang_vel_z = (0.0, 0.0)
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        env_cfg.commands.base_velocity.heading_command = False
 
     agent_cfg = load_cfg_from_registry(args_cli.task, "tdmpc_cfg_entry_point")
     agent_cfg.num_envs = args_cli.num_envs
@@ -99,6 +105,13 @@ def main():
     actrate_sq = torch.zeros((), device=dev)
     falls = torch.zeros((), device=dev)
     timeouts = torch.zeros((), device=dev)
+    # stability / omnidirectional-tracking accumulators
+    lat_sum = torch.zeros((), device=dev)     # |v_y| off-command lateral
+    vert_sum = torch.zeros((), device=dev)    # |v_z| vertical bob
+    yaw_sum = torch.zeros((), device=dev)     # |w_z| yaw rate
+    trklin_sum = torch.zeros((), device=dev)  # ||achieved_xy - commanded_xy||
+    trkang_sum = torch.zeros((), device=dev)  # |achieved_wz - commanded_wz|
+    cmdspd_sum = torch.zeros((), device=dev)  # commanded planar speed (context)
     prev_action = None
 
     obs_p, obs_c = env.reset()
@@ -113,12 +126,22 @@ def main():
             obs_p, obs_c, reward, terminated, time_out, _ = env.step(env_action)
             if i >= args_cli.warmup:
                 data = robot.data
-                fwd_sum += data.root_lin_vel_b.torch[:, 0].sum()
+                vb = data.root_lin_vel_b.torch          # body-frame linear vel (N,3)
+                wb = data.root_ang_vel_b.torch          # body-frame angular vel (N,3)
+                fwd_sum += vb[:, 0].sum()
+                lat_sum += vb[:, 1].abs().sum()
+                vert_sum += vb[:, 2].abs().sum()
+                yaw_sum += wb[:, 2].abs().sum()
                 accel_sq += data.body_lin_acc_w.torch[:, 0, :2].square().sum()
-                rock_sq += data.root_ang_vel_b.torch[:, :2].square().sum()
+                rock_sq += wb[:, :2].square().sum()
                 jvel_sq += data.joint_vel.torch.square().mean(dim=1).sum()
                 if prev_action is not None:
                     actrate_sq += (env_action - prev_action).square().mean(dim=1).sum()
+                # omnidirectional command-tracking error (achieved vs commanded, body ~ yaw frame)
+                cmd = uenv.command_manager.get_command("base_velocity")   # (N,3): vx,vy,wz
+                trklin_sum += (vb[:, :2] - cmd[:, :2]).norm(dim=1).sum()
+                trkang_sum += (wb[:, 2] - cmd[:, 2]).abs().sum()
+                cmdspd_sum += cmd[:, :2].norm(dim=1).sum()
                 tm = uenv.termination_manager
                 falls += (tm.dones & ~tm.time_outs).sum()
                 timeouts += tm.time_outs.sum()
@@ -147,6 +170,14 @@ def main():
         "timeouts": float(timeouts.item()),
         "fall_rate_per_min": float(falls.item() / env_seconds * 60.0),
         "mean_episode_len_s": float(env_seconds / resets) if resets > 0 else float("inf"),
+        # --- stability / omnidirectional-tracking (the IMU-cleanliness signals) ---
+        "varied_commands": bool(args_cli.varied_commands),
+        "lateral_speed_mean": float(lat_sum.item() / denom),   # |v_y| off-command (want ~0)
+        "vertical_speed_mean": float(vert_sum.item() / denom), # |v_z| bob (want ~0)
+        "yaw_rate_mean": float(yaw_sum.item() / denom),        # |w_z| (want ~ commanded)
+        "track_err_lin_mean": float(trklin_sum.item() / denom),# ||achieved_xy - commanded_xy||
+        "track_err_ang_mean": float(trkang_sum.item() / denom),# |achieved_wz - commanded_wz|
+        "commanded_speed_mean": float(cmdspd_sum.item() / denom),
     }
     print("[eval-smooth] RESULT " + json.dumps(metrics))
     if args_cli.out:

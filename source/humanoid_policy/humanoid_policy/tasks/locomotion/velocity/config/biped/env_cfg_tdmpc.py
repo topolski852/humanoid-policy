@@ -114,6 +114,21 @@ class HybridRewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)        # light jerk penalty
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-0.1)       # joint safety
 
+    # --- STABILITY-SEARCH stack (add-back). Weight 0 by default = NO behavior change; the walk
+    # reward-search raises these to chase a STABLE OMNIDIRECTIONAL gait once the bootstrap seed+BC
+    # holds the walk (which is what prevents these from "barbering the gait" as they did pre-bootstrap).
+    # Two omnidirectional command-TRACKING rewards (reward matching the commanded velocity vector ->
+    # penalize off-command lateral drift + yaw spin) + four off-command QUIETNESS penalties (torso
+    # gyro / vertical bob / tilt / accel). The IMU ideal: achieve the commanded direction, zero else. ---
+    track_lin_vel_xy = RewTerm(func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=0.0,
+                               params={"command_name": "base_velocity", "std": 0.25})
+    track_ang_vel_z = RewTerm(func=mdp.track_ang_vel_z_world_exp, weight=0.0,
+                              params={"command_name": "base_velocity", "std": 0.25})
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)            # torso roll/pitch gyro
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=0.0)             # vertical bob
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)  # torso level
+    base_accel_xy_l2 = RewTerm(func=mdp.base_lin_accel_xy_l2, weight=0.0)    # IMU x/y accel (jerk)
+
 
 @configclass
 class GentleEventsCfg(EventsCfg):

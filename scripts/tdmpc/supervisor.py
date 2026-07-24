@@ -281,7 +281,7 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
     cmd = [VENV_PY, entry_path, "--variant", variant, "--num_envs", str(spec.get("num_envs", 32)),
            "--tdmpc2_square", "--compile", "--updates_per_step", str(spec.get("updates_per_step", 16)),
            "--max_env_steps", str(max_steps), "--seed", str(spec.get("seed", 0)), "--headless"]
-    if warm and not is_bootstrap:          # bootstrap seeds from PPO; it has no --init_checkpoint
+    if warm:   # train.py + bootstrap.py both accept --init_checkpoint (bootstrap warm-starts then seeds)
         cmd += ["--init_checkpoint", warm]
     overrides = spec.get("overrides") or {}
     if overrides:
@@ -391,7 +391,7 @@ def grade_run(run_dir: str, cfg) -> dict:
     grade_out = os.path.join(run_dir, "grade.json")
     cmd = [VENV_PY, GRADE, "--checkpoint", ckpt, "--cmd_vx", str(cfg.cmd_vx),
            "--num_envs", str(cfg.eval_envs), "--steps", str(cfg.eval_steps), "--out", grade_out,
-           "--plant", cfg.grade_plant]
+           "--plant", cfg.grade_plant, "--objective", cfg.grade_objective]
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
     _log(f"  grading {os.path.basename(ckpt)} ...")
     try:
@@ -480,6 +480,9 @@ def main():
     p.add_argument("--grade_timeout", type=int, default=1800)
     p.add_argument("--grade_plant", choices=["baseline", "modeled"], default="modeled",
                    help="plant for grading eval (bootstrap fleet trains on baseline -> grade baseline).")
+    p.add_argument("--grade_objective", choices=["walk", "stability"], default="walk",
+                   help="'walk' = forward-walk fitness; 'stability' = omnidirectional tracking * "
+                        "IMU-quietness (for the stability search).")
     p.add_argument("--queue_grace_secs", type=int, default=1800,
                    help="if the queue is exhausted (not at cap), wait this long for the advisor to "
                         "append specs before idling.")

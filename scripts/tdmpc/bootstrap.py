@@ -56,6 +56,14 @@ parser.add_argument("--bc_plan_std", type=float, default=0.3,
                     help="plan_std stored on seed transitions -> BC strength via the TD-M(PC)^2 prior "
                          "(smaller = stronger; 2.0 = near-inert = buffer-injection only). Needs --tdmpc2_square.")
 parser.add_argument("--cmd_vx", type=float, default=0.3, help="Fixed forward command (m/s) for seed + online.")
+parser.add_argument("--varied_commands", action="store_true",
+                    help="Use the env's FULL velocity-command range (vx/vy/yaw + standing envs) for "
+                         "seed + online instead of a fixed forward cmd_vx -> a deployable command-"
+                         "tracking walk. PPO tracks the command (it's in the obs) so the seed is "
+                         "diverse. (Phase-0 forward-speed print is less meaningful in this mode.)")
+parser.add_argument("--init_checkpoint", type=str, default=None,
+                    help="Warm-start the TD-MPC2 agent from this .pt BEFORE seeding (e.g. continue a "
+                         "baseline-bootstrapped walker onto the modeled plant = domain adaptation).")
 parser.add_argument("--plant", choices=["baseline", "modeled"], default="baseline")
 parser.add_argument("--validate_only", action="store_true",
                     help="Phase 0 only: roll PPO out, report forward speed, exit (no seeding/training).")
@@ -134,13 +142,20 @@ def main():
     env_cfg.seed = args_cli.seed
     if args_cli.overrides:
         _apply_overrides(env_cfg, args_cli.overrides)
-    # fix the command to a steady forward walk (seed + online + eval all use cmd_vx)
-    r = env_cfg.commands.base_velocity.ranges
-    r.lin_vel_x = (args_cli.cmd_vx, args_cli.cmd_vx)
-    r.lin_vel_y = (0.0, 0.0)
-    r.ang_vel_z = (0.0, 0.0)
-    env_cfg.commands.base_velocity.rel_standing_envs = 0.0
-    env_cfg.commands.base_velocity.heading_command = False
+    if args_cli.varied_commands:
+        # keep the env's FULL command range (vx/vy/yaw + standing envs) -> deployable tracking walk.
+        env_cfg.commands.base_velocity.heading_command = False
+        print(f"[bootstrap] VARIED commands: using env range "
+              f"lin_vel_x={env_cfg.commands.base_velocity.ranges.lin_vel_x} "
+              f"rel_standing={env_cfg.commands.base_velocity.rel_standing_envs}")
+    else:
+        # fix the command to a steady forward walk (seed + online + eval all use cmd_vx)
+        r = env_cfg.commands.base_velocity.ranges
+        r.lin_vel_x = (args_cli.cmd_vx, args_cli.cmd_vx)
+        r.lin_vel_y = (0.0, 0.0)
+        r.ang_vel_z = (0.0, 0.0)
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        env_cfg.commands.base_velocity.heading_command = False
 
     agent_cfg = load_cfg_from_registry(args_cli.task, "tdmpc_cfg_entry_point")
     agent_cfg.num_envs = args_cli.num_envs
@@ -172,6 +187,11 @@ def main():
 
     # ---------------- Phase 0/1: validate + seed the buffer with PPO-walk transitions ----------------
     agent = TDMPC2(agent_cfg, env.num_obs, env.num_actions, device)
+    if args_cli.init_checkpoint is not None:
+        ck = args_cli.init_checkpoint if os.path.isabs(args_cli.init_checkpoint) \
+            else os.path.join(REPO_ROOT, args_cli.init_checkpoint)
+        agent.load(ck)
+        print(f"[bootstrap] warm-started agent from {ck} (then seeding refines it)")
     buffer = SequenceReplayBuffer(agent_cfg, N, env.num_obs, env.num_priv_obs, env.num_actions, device)
     act_scale = float(agent_cfg.act_env_scale)
     use_sq = bool(agent_cfg.use_tdmpc2_square)

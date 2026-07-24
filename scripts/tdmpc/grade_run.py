@@ -89,12 +89,60 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
     return float(fitness), comp
 
 
+# --- STABILITY objective: track the command vector + keep the always-off-command IMU quiet ---
+TRK_LIN_SCALE = 0.15    # exp(-track_err_lin / .): matching commanded (vx,vy) within ~0.15 m/s
+TRK_ANG_SCALE = 0.30    # exp(-track_err_ang / .): matching commanded yaw-rate within ~0.3 rad/s
+VERT_SCALE = 0.05       # exp(-|v_z| / .): vertical bob
+ROCK_SCALE = 0.30       # exp(-rocking_rms / .): torso roll/pitch gyro
+SACCEL_SCALE = 6.0      # exp(-base_accel_rms / .): IMU x/y jerk
+# stability win bar
+SWIN_TRK_LIN = 0.12     # m/s command-tracking error, max
+SWIN_ROCK = 0.25        # rocking_rms, max
+SWIN_VERT = 0.04        # |v_z|, max
+SWIN_FALL = 3.0         # falls/min, max
+
+
+def score_stability(metrics: dict) -> tuple[float, dict]:
+    """(fitness, components) for the OMNIDIRECTIONAL stability objective. fitness =
+    tracking_score * quietness_score, both in [0,1]. tracking_score gates 'follows the command'
+    (a stand-still robot scores ~0 when commanded to move); quietness rewards a clean IMU (no
+    vertical bob / rocking / jerk). Read from an eval run with --varied_commands."""
+    trk_lin = float(metrics.get("track_err_lin_mean", 1e6))
+    trk_ang = float(metrics.get("track_err_ang_mean", 1e6))
+    vert = float(metrics.get("vertical_speed_mean", 1e6))
+    rock = float(metrics.get("rocking_rms", 1e6))
+    accel = float(metrics.get("base_accel_rms", 1e6))
+    fall_rate = float(metrics.get("fall_rate_per_min", 1e6))
+    if not math.isfinite(fall_rate):
+        fall_rate = 1e6
+
+    tracking = math.exp(-trk_lin / TRK_LIN_SCALE) * math.exp(-trk_ang / TRK_ANG_SCALE)
+    quietness = (math.exp(-vert / VERT_SCALE) * math.exp(-max(0.0, rock) / ROCK_SCALE)
+                 * math.exp(-max(0.0, accel) / SACCEL_SCALE))
+    fitness = tracking * quietness
+    is_win = (trk_lin <= SWIN_TRK_LIN and rock <= SWIN_ROCK and vert <= SWIN_VERT
+              and fall_rate <= SWIN_FALL)
+    comp = {
+        "fitness": round(fitness, 4), "tracking": round(tracking, 4), "quietness": round(quietness, 4),
+        "is_win": bool(is_win),
+        "_raw": {"track_err_lin": round(trk_lin, 4), "track_err_ang": round(trk_ang, 4),
+                 "vertical_speed": round(vert, 4), "rocking_rms": round(rock, 4),
+                 "base_accel_rms": round(accel, 4),
+                 "fall_rate_per_min": round(fall_rate, 4) if fall_rate < 1e6 else "inf",
+                 "forward_speed": round(float(metrics.get("forward_speed_mean", 0.0)), 4),
+                 "commanded_speed": round(float(metrics.get("commanded_speed_mean", 0.0)), 4)},
+    }
+    return float(fitness), comp
+
+
 def run_eval(checkpoint: str, task: str, cmd_vx: float, num_envs: int, steps: int,
-             plant: str, plan: bool, metrics_out: str, seed: int = 0) -> dict:
+             plant: str, plan: bool, metrics_out: str, seed: int = 0, varied: bool = False) -> dict:
     """Launch eval_smoothness.py in a fresh Isaac process; return the parsed metrics dict."""
     cmd = [VENV_PY, EVAL, "--checkpoint", checkpoint, "--task", task,
            "--cmd_vx", str(cmd_vx), "--num_envs", str(num_envs), "--steps", str(steps),
            "--plant", plant, "--seed", str(seed), "--out", metrics_out, "--headless"]
+    if varied:
+        cmd.append("--varied_commands")
     if plan:
         cmd.append("--plan")
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
@@ -121,27 +169,39 @@ def main():
                    "(default: <ckpt-dir>/eval_metrics.json).")
     p.add_argument("--out", default=None, help="where to write the grade JSON "
                    "(default: <ckpt-dir>/grade.json).")
+    p.add_argument("--objective", choices=["walk", "stability"], default="walk",
+                   help="'walk' = honest forward-walk fitness (default); 'stability' = omnidirectional "
+                        "command-tracking * IMU-quietness (uses --varied_commands eval).")
     args = p.parse_args()
 
     ckpt_dir = args.checkpoint if os.path.isdir(args.checkpoint) else os.path.dirname(args.checkpoint)
     metrics_out = args.metrics_out or os.path.join(ckpt_dir or ".", "eval_metrics.json")
     grade_out = args.out or os.path.join(ckpt_dir or ".", "grade.json")
+    varied = (args.objective == "stability")
 
     if args.metrics:
         with open(args.metrics) as f:
             metrics = json.load(f)
     else:
         metrics = run_eval(args.checkpoint, args.task, args.cmd_vx, args.num_envs, args.steps,
-                           args.plant, args.plan, metrics_out, args.seed)
+                           args.plant, args.plan, metrics_out, args.seed, varied=varied)
 
-    fitness, comp = score(metrics, args.cmd_vx)
-    grade = {"checkpoint": args.checkpoint, "task": args.task, **comp, "metrics": metrics}
+    fitness, comp = score_stability(metrics) if args.objective == "stability" else score(metrics, args.cmd_vx)
+    grade = {"checkpoint": args.checkpoint, "task": args.task, "objective": args.objective,
+             **comp, "metrics": metrics}
     os.makedirs(os.path.dirname(os.path.abspath(grade_out)), exist_ok=True)
     with open(grade_out, "w") as f:
         json.dump(grade, f, indent=2)
-    print(f"[grade] fitness={fitness:.4f} walk_gate={comp['walk_gate']} is_win={comp['is_win']} "
-          f"(fwd={comp['_raw']['forward_speed_mean']} fall/min={comp['_raw']['fall_rate_per_min']} "
-          f"ep_len_s={comp['_raw']['mean_episode_len_s']})")
+    if args.objective == "stability":
+        r = comp["_raw"]
+        print(f"[grade] STABILITY fitness={fitness:.4f} tracking={comp['tracking']} "
+              f"quietness={comp['quietness']} is_win={comp['is_win']} "
+              f"(trk_lin={r['track_err_lin']} rock={r['rocking_rms']} vert={r['vertical_speed']} "
+              f"fall/min={r['fall_rate_per_min']})")
+    else:
+        print(f"[grade] fitness={fitness:.4f} walk_gate={comp['walk_gate']} is_win={comp['is_win']} "
+              f"(fwd={comp['_raw']['forward_speed_mean']} fall/min={comp['_raw']['fall_rate_per_min']} "
+              f"ep_len_s={comp['_raw']['mean_episode_len_s']})")
     print(f"[grade] wrote {grade_out}")
     return 0
 
