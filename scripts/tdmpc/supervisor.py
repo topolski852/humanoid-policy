@@ -273,11 +273,15 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
     expects_locomotion = "stand" not in variant
     max_steps = int(spec.get("max_env_steps", cfg.max_env_steps))
     warm = warm_override if warm_override is not None else _resolve_warm_start(spec, best_ckpt)
+    # entry script: train.py (default) or bootstrap.py (seeds the buffer from PPO -> no warm-start).
+    entry = spec.get("entry", TRAIN)
+    entry_path = entry if os.path.isabs(entry) else os.path.join("scripts", "tdmpc", entry)
+    is_bootstrap = "bootstrap" in os.path.basename(entry)
 
-    cmd = [VENV_PY, TRAIN, "--variant", variant, "--num_envs", str(spec.get("num_envs", 32)),
+    cmd = [VENV_PY, entry_path, "--variant", variant, "--num_envs", str(spec.get("num_envs", 32)),
            "--tdmpc2_square", "--compile", "--updates_per_step", str(spec.get("updates_per_step", 16)),
            "--max_env_steps", str(max_steps), "--seed", str(spec.get("seed", 0)), "--headless"]
-    if warm:
+    if warm and not is_bootstrap:          # bootstrap seeds from PPO; it has no --init_checkpoint
         cmd += ["--init_checkpoint", warm]
     overrides = spec.get("overrides") or {}
     if overrides:
@@ -386,7 +390,8 @@ def grade_run(run_dir: str, cfg) -> dict:
     ckpt = best if os.path.exists(best) else (_latest_ckpt(run_dir) or run_dir)
     grade_out = os.path.join(run_dir, "grade.json")
     cmd = [VENV_PY, GRADE, "--checkpoint", ckpt, "--cmd_vx", str(cfg.cmd_vx),
-           "--num_envs", str(cfg.eval_envs), "--steps", str(cfg.eval_steps), "--out", grade_out]
+           "--num_envs", str(cfg.eval_envs), "--steps", str(cfg.eval_steps), "--out", grade_out,
+           "--plant", cfg.grade_plant]
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
     _log(f"  grading {os.path.basename(ckpt)} ...")
     try:
@@ -473,10 +478,32 @@ def main():
     p.add_argument("--eval_envs", type=int, default=64)
     p.add_argument("--eval_steps", type=int, default=1000)
     p.add_argument("--grade_timeout", type=int, default=1800)
+    p.add_argument("--grade_plant", choices=["baseline", "modeled"], default="modeled",
+                   help="plant for grading eval (bootstrap fleet trains on baseline -> grade baseline).")
     p.add_argument("--queue_grace_secs", type=int, default=1800,
                    help="if the queue is exhausted (not at cap), wait this long for the advisor to "
                         "append specs before idling.")
+    p.add_argument("--queue", type=str, default=None,
+                   help="queue file (default scripts/tdmpc/queue.jsonl). Use a separate file for a "
+                        "separate fleet, e.g. scripts/tdmpc/bootstrap_queue.jsonl.")
+    p.add_argument("--run_tag", type=str, default="",
+                   help="suffix for state/journal/control/DONE so multiple fleets don't collide "
+                        "(e.g. 'bootstrap' -> supervisor_state_bootstrap.json).")
     cfg = p.parse_args()
+
+    # re-point the fleet's files if a tag/queue was given (keeps a bootstrap fleet separate from
+    # the reward-search fleet's state + journal).
+    global QUEUE, STATE, JOURNAL, CONTROL, DONE_SENTINEL, OVERRIDES_DIR
+    if cfg.queue:
+        QUEUE = cfg.queue if os.path.isabs(cfg.queue) else os.path.join(REPO_ROOT, cfg.queue)
+    if cfg.run_tag:
+        t = cfg.run_tag
+        STATE = os.path.join(STATE_DIR, f"supervisor_state_{t}.json")
+        JOURNAL = os.path.join(STATE_DIR, f"supervisor_journal_{t}.jsonl")
+        CONTROL = os.path.join(STATE_DIR, f"control_{t}.json")
+        DONE_SENTINEL = os.path.join(STATE_DIR, f"SUPERVISOR_DONE_{t}")
+        OVERRIDES_DIR = os.path.join(STATE_DIR, f"_overrides_{t}")
+    _log(f"queue={QUEUE} state={os.path.basename(STATE)} journal={os.path.basename(JOURNAL)}")
 
     os.makedirs(STATE_DIR, exist_ok=True)
     if os.path.exists(DONE_SENTINEL):

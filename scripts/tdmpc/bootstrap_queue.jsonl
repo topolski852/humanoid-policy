@@ -1,0 +1,14 @@
+# TD-MPC2 BOOTSTRAP-FROM-PPO fleet — one JSON spec per line. Run by supervisor.py with
+#   --queue scripts/tdmpc/bootstrap_queue.jsonl --run_tag bootstrap --grade_plant baseline
+# Each spec launches scripts/tdmpc/bootstrap.py (entry="bootstrap.py"): seed the buffer from the
+# PPO walk (deploy/walk/policy.pt), pretrain-burst on it, then online-refine. warm_start="scratch"
+# (bootstrap seeds from PPO, not a checkpoint). All on the BASELINE plant (the PPO walk's plant).
+# The smoke showed the seeded policy walks at 0.2-0.45 m/s immediately, then drifts toward standing
+# with too little anchoring -> these 4 vary the ANTI-COLLAPSE levers: pretrain updates, BC strength
+# (bc_plan_std: smaller = stronger prior pull toward the demo walk), and seed size.
+# Supervisor auto-adds: --variant --num_envs 32 --tdmpc2_square --compile --updates_per_step 16
+#   --max_env_steps <spec> --seed 0 --headless. Success = holds forward_speed >= ~0.25 to the end.
+{"name": "bootstrap-A-base", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.3"], "notes": "Baseline recipe: 400k seed, 20k pretrain, BC plan_std 0.3. The reference to compare the others against."}
+{"name": "bootstrap-B-strongbc", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15"], "notes": "Stronger BC anchor (plan_std 0.3->0.15): does a tighter prior pull toward the demo walk stop the collapse back to standing?"}
+{"name": "bootstrap-C-morepretrain", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "40000", "--bc_plan_std", "0.3"], "notes": "Double the pretrain burst (20k->40k): more world-model/value anchoring on the walk before online collection starts."}
+{"name": "bootstrap-D-bigseed", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "800000", "--pretrain_updates", "30000", "--bc_plan_std", "0.3"], "notes": "Bigger seed (400k->800k walk transitions) + 30k pretrain: more walking data resident in the buffer to dilute online drift."}
