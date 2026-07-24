@@ -169,6 +169,12 @@ def evaluate_run(sc: dict, min_judge_steps: int, expects_locomotion: bool = Fals
                     and cur_step >= min_judge_steps + 300_000:
                 return "stop", (f"SPEED_REGRESSION mean speed {best_win:.3f}->{spd:.3f} "
                                 f"(gait lost >=300k) @ {cur_step}")
+        # CONVERGED: return stopped improving for a LONG window (~2M steps) after min_judge -> the run
+        # has plateaued; stop and move on. This is the "train until it stops improving" stopper for
+        # the long runs (a still-improving run keeps training toward 10M-20M+). Generous patience so a
+        # good run is never cut short. ~1 TB point / 1000 steps -> patience 2000 ~= 2M steps.
+        if ret and plateaued(ret, patience=2000, min_delta=0.5):
+            return "stop", f"CONVERGED return plateaued ~{ret[-1]:.2f} (no +0.5 in ~2M steps) @ {cur_step}"
         return "continue", (f"HEALTHY return={ret[-1] if ret else float('nan'):.2f} "
                             f"speed={spd if spd is not None else float('nan'):.3f} @ {cur_step}")
 

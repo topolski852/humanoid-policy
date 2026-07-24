@@ -45,21 +45,36 @@ Win bar (grade_run.py): `track_err_lin<=0.12`, `rocking_rms<=0.25`, `vertical_sp
   `lin_vel_z_l2` (vertical), `flat_orientation_l2` (torso level), `base_accel_xy_l2` (jerk). Plus the
   existing `feet_air_time`, `feet_slide`, `action_rate_l2`, `stand_walk`, `upright_bonus`.
 
+## KEEP THE QUEUE FED (continuous, all week) — critical
+The supervisor IDLES if the queue drains. Your #1 job is to keep it running the WHOLE week: **every
+wake, make sure there are at least ~4 pending specs** ahead of the supervisor's `next_index` (from
+`supervisor_state_stability.json` vs the number of lines in `stability_queue.jsonl`). If fewer,
+append more NOW. Never let it run dry. This is not optional — an idle GPU wastes the vacation.
+
+## ESCALATE RUN LENGTH as the config solidifies
+Runs are NOT judged before 2M (min_judge=2M) and stop on CONVERGED (return plateau) or budget. So
+long budgets are safe — a still-improving run trains on toward 10M-20M. Escalate `max_env_steps`:
+- **Broad phase:** 2M (the seed 6). Just to rank the levers.
+- **Narrow phase:** promising combined configs -> **5M**.
+- **Solid configs:** the best 1-2 -> **10M**.
+- **Final winner:** **20M+** (or higher) -> effectively "train until it plateaus." Stability, not
+  run length, is the goal — give the best config as many steps as it keeps improving on.
+
 ## How to steer — BROAD early, NARROW late
 1. **Broad phase (early):** the seed queue isolates each stability lever (A-track, B-gyro, C-level,
    D-novert, E-smooth, F-fullstack). Once several have graded, identify which single levers most
    improved `quietness` WITHOUT hurting `tracking` (read `_raw`: did rocking/vertical/accel drop but
    track_err stay low?).
-2. **Narrow phase (later):** append specs that COMBINE the 2-3 winning levers, and tune their
-   weights (e.g. if flat_orientation -0.3 helped, try -0.6 and -1.0 toward the PPO-proven -2.183; if
-   a lever raised track_err, back it off). Warm-start each from the best stability checkpoint so far
-   (`"warm_start":"best"`) so gains compound. Keep `--varied_commands` and the tracking terms ON.
-   Move toward the win bar, then past it (lower rocking/vertical further).
+2. **Narrow phase (later):** append specs (at 5M, then 10M) that COMBINE the 2-3 winning levers, and
+   tune their weights (e.g. if flat_orientation -0.3 helped, try -0.6 and -1.0 toward the PPO-proven
+   -2.183; if a lever raised track_err, back it off). Warm-start each from the best stability
+   checkpoint so far (`"warm_start":"best"`) so gains compound. Keep `--varied_commands` + tracking
+   terms ON. Move toward the win bar, then past it (lower rocking/vertical further).
 3. **Trade-off watch:** stability penalties can suppress the gait (raise track_err / cut speed). If a
    spec improves quietness but track_err rises above ~0.15, it's over-penalized — back off. The
    sweet spot is quiet AND tracking.
-4. Late in the week, once a clearly-best stable config is found, propose ONE run on the **modeled
-   plant** (`--plant modeled`, and grade with `--grade_plant modeled`) to harden it for the real robot.
+4. Once a clearly-best stable config is found, run it LONG (10M-20M+) and propose a run on the
+   **modeled plant** (`--plant modeled`, grade `--grade_plant modeled`) to harden it for the real robot.
 
 Spec schema (see stability_queue.jsonl header): `{"name","entry":"bootstrap.py","warm_start":"best"
 |"<path>","variant":"walk-biped-tdmpc","max_env_steps",<int>,"flags":["--plant","baseline",
