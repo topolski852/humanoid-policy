@@ -164,13 +164,18 @@ def score_stability(metrics: dict) -> tuple[float, dict]:
 
 
 def run_eval(checkpoint: str, task: str, cmd_vx: float, num_envs: int, steps: int,
-             plant: str, plan: bool, metrics_out: str, seed: int = 0, varied: bool = False) -> dict:
+             plant: str, plan: bool, metrics_out: str, seed: int = 0, varied: bool = False,
+             horizon: int | None = None, warm_start: bool = False) -> dict:
     """Launch eval_smoothness.py in a fresh Isaac process; return the parsed metrics dict."""
     cmd = [VENV_PY, EVAL, "--checkpoint", checkpoint, "--task", task,
            "--cmd_vx", str(cmd_vx), "--num_envs", str(num_envs), "--steps", str(steps),
            "--plant", plant, "--seed", str(seed), "--out", metrics_out, "--headless"]
     if varied:
         cmd.append("--varied_commands")
+    if horizon is not None:
+        cmd += ["--horizon", str(horizon)]
+    if warm_start:
+        cmd.append("--warm_start")
     if plan:
         cmd.append("--plan")
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
@@ -197,6 +202,9 @@ def main():
                    "(default: <ckpt-dir>/eval_metrics.json).")
     p.add_argument("--out", default=None, help="where to write the grade JSON "
                    "(default: <ckpt-dir>/grade.json).")
+    p.add_argument("--horizon", type=int, default=None,
+                   help="MPPI planning horizon for the eval (see eval_smoothness --horizon).")
+    p.add_argument("--warm_start", action="store_true", help="MPPI warm start for the eval.")
     p.add_argument("--objective", choices=["walk", "stability"], default="walk",
                    help="'walk' = honest forward-walk fitness (default); 'stability' = omnidirectional "
                         "command-tracking * IMU-quietness (uses --varied_commands eval).")
@@ -212,7 +220,8 @@ def main():
             metrics = json.load(f)
     else:
         metrics = run_eval(args.checkpoint, args.task, args.cmd_vx, args.num_envs, args.steps,
-                           args.plant, args.plan, metrics_out, args.seed, varied=varied)
+                           args.plant, args.plan, metrics_out, args.seed, varied=varied,
+                           horizon=args.horizon, warm_start=args.warm_start)
 
     fitness, comp = score_stability(metrics) if args.objective == "stability" else score(metrics, args.cmd_vx)
     grade = {"checkpoint": args.checkpoint, "task": args.task, "objective": args.objective,

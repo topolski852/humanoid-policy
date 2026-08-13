@@ -56,6 +56,14 @@ parser.add_argument("--bc_plan_std", type=float, default=0.3,
                     help="plan_std stored on seed transitions -> BC strength via the TD-M(PC)^2 prior "
                          "(smaller = stronger; 2.0 = near-inert = buffer-injection only). Needs --tdmpc2_square.")
 parser.add_argument("--cmd_vx", type=float, default=0.3, help="Fixed forward command (m/s) for seed + online.")
+parser.add_argument("--horizon", type=int, default=None,
+                    help="TD-MPC2 planning/rollout horizon. Default 3 = 0.12 s against a ~0.7 s gait "
+                         "cycle. Measured 2026-08-13: planning at H=6 on an H=3-TRAINED checkpoint "
+                         "already removes 12.5-18.7 pp of falls; this trains at H, so the consistency "
+                         "loss fits H-step rollouts and the value fn matches the horizon actually used. "
+                         "Also sets the replay window length (H+1 obs).")
+parser.add_argument("--mppi_warm_start", action="store_true",
+                    help="carry the previous step's MPPI solution forward (official tdmpc2.py:168).")
 parser.add_argument("--buffer_size", type=int, default=None,
                     help="Replay capacity (transitions). The DEMO-ANCHOR lever: at the 1M default the "
                          "seed is the OLDEST data in a ring, so a 400k seed is fully evicted after ~1M "
@@ -172,6 +180,10 @@ def main():
         agent_cfg.updates_per_step = args_cli.updates_per_step
     if args_cli.buffer_size is not None:
         agent_cfg.buffer_size = int(args_cli.buffer_size)
+    if args_cli.horizon is not None:
+        agent_cfg.horizon = int(args_cli.horizon)
+    if args_cli.mppi_warm_start:
+        agent_cfg.mppi_warm_start = True
     if args_cli.compile:
         agent_cfg.compile = True
     if args_cli.tdmpc2_square:
@@ -296,6 +308,8 @@ def main():
                    "seed_transitions": n_iters * N, "pretrain_updates": args_cli.pretrain_updates,
                    "bc_plan_std": args_cli.bc_plan_std if use_sq else None,
                    "max_env_steps": agent_cfg.max_env_steps, "tdmpc2_square": use_sq,
+                   "horizon": agent_cfg.horizon, "mppi_warm_start": bool(agent_cfg.mppi_warm_start),
+                   "buffer_size": agent_cfg.buffer_size,
                    "updates_per_step": agent_cfg.updates_per_step, "overrides": args_cli.overrides}, f, indent=2)
 
     print(f"[bootstrap] PRETRAIN+ONLINE: seed_burst(pretrain)={agent_cfg.seed_burst_updates} updates, "

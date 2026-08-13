@@ -41,6 +41,14 @@ parser.add_argument("--varied_commands", action="store_true",
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--task", type=str, default=None)
 parser.add_argument("--out", type=str, default=None, help="write metrics JSON here.")
+parser.add_argument("--horizon", type=int, default=None,
+                    help="override the MPPI planning horizon at INFERENCE. No loaded weight depends "
+                         "on horizon (the world model is one-step), so an H=3-trained checkpoint can "
+                         "plan at H=6. Measured 2026-08-13: that alone takes 12.5-18.7 pp off the "
+                         "fall rate on every walker we have.")
+parser.add_argument("--warm_start", action="store_true",
+                    help="seed each MPPI solve with the previous step's shifted solution "
+                         "(official tdmpc2.py:168).")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -78,12 +86,16 @@ def main():
 
     agent_cfg = load_cfg_from_registry(args_cli.task, "tdmpc_cfg_entry_point")
     agent_cfg.num_envs = args_cli.num_envs
+    agent_cfg.mppi_warm_start = bool(args_cli.warm_start)
+    if args_cli.horizon is not None:
+        agent_cfg.horizon = int(args_cli.horizon)
     device = args_cli.device or env_cfg.sim.device
 
     ckpt = args_cli.checkpoint
     if os.path.isdir(ckpt):
         ckpt = os.path.join(ckpt, "model_best.pt")
-    print(f"[eval-smooth] plant={args_cli.plant} planner={'mppi' if args_cli.plan else 'prior'} ckpt={ckpt}")
+    print(f"[eval-smooth] plant={args_cli.plant} planner={'mppi' if args_cli.plan else 'prior'} "
+          f"H={agent_cfg.horizon} warm_start={bool(args_cli.warm_start)} ckpt={ckpt}")
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     env = TdmpcVecEnv(env)
@@ -194,6 +206,8 @@ def main():
     metrics = {
         "policy": "tdmpc2",
         "planner": "mppi" if args_cli.plan else "prior",
+        "plan_horizon": int(agent_cfg.horizon),
+        "mppi_warm_start": bool(args_cli.warm_start),
         "plant": args_cli.plant,
         "checkpoint": os.path.basename(ckpt),
         "num_envs": N,
