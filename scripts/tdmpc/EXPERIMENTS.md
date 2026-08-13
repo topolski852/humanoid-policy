@@ -517,3 +517,51 @@ penalty. D (flat_orientation alone) was stopped at 0.82M; both remain queued at 
 ~`0.8 + 0.2*smooth` for any non-faller and therefore cannot rank posture — it skipped C (0.9318 <
 A's 0.9334) even though C is the better gait on every quality axis. Preserved manually. Worth
 changing the preserve rule to consider posture, or preserving every `is_win` run.
+
+## FIDELITY AUDIT vs tdmpc2_official (2026-08-13) — horizon is the lever, warm start is not
+Audited our port line-by-line against `/home/nse/humanoid/tdmpc2_reference`. Full findings D1-D11 in
+the audit artifact; the three that were tested this session:
+
+**D4 torch.compile + Adam — NOT A BUG.** The reference builds both optimizers with `capturable=True`
+(tdmpc2.py:29,31) because it compiles `_update` with `reduce-overhead`; we omit it. Measured
+(`check_compile_adam.py`, `check_compile_engaged.py`, no Isaac needed): compiled is BIT-IDENTICAL to
+eager over 40 updates and Adam's step counter advances correctly (40/40). Compile really does engage
+(23 dynamo frames, 1.81x) rather than silently falling back. Mechanism: 10 graph breaks remain, at
+`.backward()` (autograd untraced by default) and at `optim.zero_grad` + a `graph_break()` torch itself
+inserts in the optimizer wrapper, so the optimizer step is never cudagraph-captured and the CPU step
+counter cannot freeze. `capturable` is moot for us. Also corrected two stale claims in agent.py:
+it is not "eager only" (compile on since 07-20) and the speedup is 1.81x, not ~3.6x.
+
+**D2 MPPI warm start — implemented, NULL at inference.** `plan_batch` never carried `_prev_mean`
+forward (upstream tdmpc2.py:168) though the unused single-obs `plan()` always did, so every
+collection and eval step in this project planned from mean=0/std=max_std. Now behind
+`cfg.mppi_warm_start` (default OFF; existing checkpoints re-grade identically) with a `reset` mask
+for upstream's `t0`. A/B on lean-C: 38.5% -> 38.0% episodes-with-a-fall = 74 -> 73 of 192, ~1/7 of
+one binomial SE. Indistinguishable from nothing. I had ranked this "severe" in the audit; it is not.
+Does NOT rule out a training-time benefit (better plans -> better data + better plan_mean/std for the
+TD-M(PC)2 prior), only a free inference-time one.
+
+**D5 PLANNING HORIZON — the lever, and it needs no retraining.** The world model is one-step and no
+loaded weight depends on horizon, so an existing checkpoint can simply plan further. Replicated on
+three independently-trained policies (warm start held ON throughout):
+
+| checkpoint | %eps fall H=3 -> H=6 | mean tilt | fwd speed |
+|---|---|---|---|
+| 07-24 winner | 30.2% -> **17.2%** | 29.5 -> 22.2 | 0.363 -> 0.425 |
+| lean-A firm | 44.8% -> **32.3%** | 19.8 -> 16.8 | 0.320 -> 0.368 |
+| lean-C soft | 38.5% -> **19.8%** | 14.5 -> **8.9** | 0.303 -> 0.313 |
+| *PPO reference* | *6.2%* | *9.7* | *0.281* |
+
+12.5-18.7 pp off the fall rate on every checkpoint, with tilt DOWN and speed UP. lean-C at H=6 has
+mean tilt 8.9 deg, BELOW the PPO reference's 9.7. For lean-C, 38.0 -> 19.8% is 73 -> 38 episodes of
+192, ~3.7 SE, p<0.001. H=12 (0.48 s) buys no further fall reduction (21.4%) and costs 15% of the
+speed -> the learned dynamics degrade past ~0.25 s. This confirms the audit's mechanism argument:
+0.12 s of lookahead against a ~0.7 s gait cycle was the binding constraint.
+
+**Consequences.** (1) All 55 historical grades understate their checkpoints -- every one planned at
+H=3. (2) H=6 closes about HALF the gap to PPO (19.8% vs 6.2%); the task-permissiveness finding is
+independent and still stands. (3) MPPI cost scales linearly with H, so H=6 doubles planning cost --
+a deployment consideration at 25 Hz, and a ~1.5-2x slowdown for online collection during training.
+(4) Untested: training AT H=6, where the consistency loss would fit 6-step rollouts and the value
+function would match the horizon actually used. Expected to beat plan-at-6-with-an-H3-model, but
+that is a hypothesis, not a measurement.
