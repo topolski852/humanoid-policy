@@ -59,7 +59,90 @@ EVAL = os.path.join("scripts", "tdmpc", "eval_smoothness.py")
 DEFAULT_TASK = "Walk-Humanoid-Policy-Biped-Tdmpc-v0"
 
 
+# ============================ WALK OBJECTIVE v2 (2026-08-13) ============================
+# The v1 fitness below is DEAD as a ranking signal. Measured on the five walkers this project
+# has produced, re-graded at H=6: it spans 0.9256-0.9351 -- a range of 0.0095 -- across
+# policies whose real fall rates differ by 2x (14.8-28.9%) and whose torso tilt differs by
+# 2.7x (9.1-24.7 deg). Three structural reasons:
+#   * `upright` reads `fall_rate_per_min`, the hard_collapse-only metric, which is 0.00 for
+#     every policy including ones that fall in 30% of episodes.
+#   * `survive` is ep_len_s/20 and 20 s IS the max episode length -> pinned at 1.0 always.
+#   * `walk_gate` saturates at 0.4*cmd = 0.12 m/s and has no upper bound, so a policy running
+#     1.5x the commanded speed scores identically to one tracking it exactly.
+# v2 keeps the repo's established shape -- multiplicative for must-haves so they cannot be
+# out-earned, additive for nice-to-haves so no single one zeroes the score -- but on signals
+# that can actually see the failures we care about:
+#     fitness = track * safety * (QW2_POSTURE*posture + QW2_SMOOTH*smooth)
+# `track` uses tracking ERROR, not raw speed, so overshoot is penalized (H=6 pushed lean-B to
+# 0.452 against a 0.300 command and v1 called that a perfect walk_gate of 1.0).
+# `safety` is the real, tilt-based episode fall rate and is deliberately the steepest term.
+TRACK_ERR_SCALE = 0.10     # m/s: exp(-|fwd-cmd|/.) -> 1.0 exact, 0.22 at 1.5x a 0.3 command
+FALL_PCT_SCALE = 10.0      # %:   exp(-pct_eps_fall/.) -> PPO's 6.2% -> 0.54, 18.8% -> 0.15, 30% -> 0.05
+TILT_SCALE = 15.0          # deg: exp(-mean_tilt/.) -> 9 deg -> 0.55, 22 deg -> 0.23
+QW2_POSTURE = 0.6
+QW2_SMOOTH = 0.4
+MOVING_FLOOR = 0.05        # m/s: below this it is not locomoting at all -> fitness 0, no partial credit
+
+
+def _score_v2(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
+    """Walk objective v2 — needs the real (tilt-based) fall metric. See the block comment above."""
+    fwd = float(metrics.get("forward_speed_mean", 0.0))
+    fall_pct = float(metrics.get("pct_episodes_with_fall", 100.0))
+    tilt = float(metrics.get("torso_tilt_deg", 90.0))
+    accel_rms = float(metrics.get("base_accel_rms", 1e6))
+    lean = metrics.get("torso_lean_fwd_deg")
+    lean = float(lean) if lean is not None else None
+
+    track = math.exp(-abs(fwd - cmd_vx) / TRACK_ERR_SCALE)
+    safety = math.exp(-max(0.0, fall_pct) / FALL_PCT_SCALE)
+    posture = math.exp(-max(0.0, tilt) / TILT_SCALE)
+    smooth = math.exp(-max(0.0, accel_rms) / ACCEL_RMS_SCALE)
+    quality = QW2_POSTURE * posture + QW2_SMOOTH * smooth
+    fitness = 0.0 if fwd < MOVING_FLOOR else track * safety * quality
+
+    ep_len_s = float(metrics.get("mean_episode_len_s", 0.0))
+    if not math.isfinite(ep_len_s):
+        ep_len_s = SURVIVE_TARGET_S
+    is_win = (fwd >= WIN_FWD_SPEED and ep_len_s >= WIN_EP_LEN_S
+              and fall_pct <= WIN_FALL_PCT_EP
+              and (lean is None or abs(lean) <= WIN_LEAN_DEG))
+    comp = {
+        "objective_version": "walk_v2",
+        "fitness": round(fitness, 4),
+        "track": round(track, 4), "safety": round(safety, 4),
+        "posture": round(posture, 4), "smooth": round(smooth, 4), "quality": round(quality, 4),
+        "tracked_ratio": round(fwd / cmd_vx, 4) if cmd_vx > 1e-3 else 0.0,
+        "is_win": bool(is_win),
+        "_raw": {
+            "forward_speed_mean": round(fwd, 4),
+            "pct_episodes_with_fall": round(fall_pct, 2),
+            "real_falls_per_min": (round(float(metrics["real_falls_per_min"]), 3)
+                                   if "real_falls_per_min" in metrics else None),
+            "torso_lean_fwd_deg": round(lean, 2) if lean is not None else None,
+            "torso_tilt_deg": round(tilt, 2),
+            "base_accel_rms": round(accel_rms, 4) if accel_rms < 1e6 else "inf",
+            "mean_episode_len_s": round(ep_len_s, 2),
+            "legacy_fall_rate_per_min": metrics.get("fall_rate_per_min"),
+            "plan_horizon": metrics.get("plan_horizon"),
+            "cmd_vx": cmd_vx,
+        },
+    }
+    return float(fitness), comp
+
+
 def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
+    """Dispatch: v2 when the real fall metric is present, else the frozen v1 below.
+
+    Evals produced before 2026-08-13 have no `pct_episodes_with_fall`, so they keep scoring
+    under v1 and every historical grade in the journal stays reproducible. v1 and v2 numbers
+    are NOT comparable — check `objective_version`.
+    """
+    if metrics.get("pct_episodes_with_fall") is not None:
+        return _score_v2(metrics, cmd_vx)
+    return _score_legacy(metrics, cmd_vx)
+
+
+def _score_legacy(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
     """(fitness, components) from an eval_smoothness.py metrics dict. Pure — no Isaac, no I/O."""
     fwd = float(metrics.get("forward_speed_mean", 0.0))
     fall_rate = float(metrics.get("fall_rate_per_min", 1e6))
@@ -96,6 +179,7 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
               and (lean is None or abs(lean) <= WIN_LEAN_DEG)
               and (fall_pct is None or fall_pct <= WIN_FALL_PCT_EP))
     comp.update({
+        "objective_version": "walk_v1_legacy",
         "fitness": round(fitness, 4),
         "quality": round(quality, 4),
         "walk_gate": round(walk_gate, 4),
@@ -236,10 +320,18 @@ def main():
               f"(trk_lin={r['track_err_lin']} rock={r['rocking_rms']} vert={r['vertical_speed']} "
               f"fall/min={r['fall_rate_per_min']})")
     else:
-        print(f"[grade] fitness={fitness:.4f} walk_gate={comp['walk_gate']} is_win={comp['is_win']} "
-              f"(fwd={comp['_raw']['forward_speed_mean']} fall/min={comp['_raw']['fall_rate_per_min']} "
-              f"ep_len_s={comp['_raw']['mean_episode_len_s']} "
-              f"lean={comp['_raw']['torso_lean_fwd_deg']}deg tilt={comp['_raw']['torso_tilt_deg']}deg)")
+        r = comp["_raw"]
+        if comp.get("objective_version") == "walk_v2":
+            print(f"[grade] fitness={fitness:.4f} ({comp['objective_version']}) is_win={comp['is_win']} "
+                  f"| track={comp['track']} safety={comp['safety']} posture={comp['posture']} "
+                  f"smooth={comp['smooth']}")
+            print(f"[grade]   fwd={r['forward_speed_mean']} ({comp['tracked_ratio']}x cmd) "
+                  f"falls={r['pct_episodes_with_fall']}%eps ({r['real_falls_per_min']}/min) "
+                  f"lean={r['torso_lean_fwd_deg']}deg tilt={r['torso_tilt_deg']}deg H={r['plan_horizon']}")
+        else:
+            print(f"[grade] fitness={fitness:.4f} (legacy) walk_gate={comp['walk_gate']} "
+                  f"is_win={comp['is_win']} (fwd={r['forward_speed_mean']} "
+                  f"fall/min={r['fall_rate_per_min']} ep_len_s={r['mean_episode_len_s']})")
     print(f"[grade] wrote {grade_out}")
     return 0
 

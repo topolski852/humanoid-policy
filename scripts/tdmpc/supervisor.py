@@ -398,6 +398,11 @@ def grade_run(run_dir: str, cfg) -> dict:
     cmd = [VENV_PY, GRADE, "--checkpoint", ckpt, "--cmd_vx", str(cfg.cmd_vx),
            "--num_envs", str(cfg.eval_envs), "--steps", str(cfg.eval_steps), "--out", grade_out,
            "--plant", cfg.grade_plant, "--objective", cfg.grade_objective]
+    # grade with the SAME planner the arm trained with, else an H=6 run is judged at H=3
+    if getattr(cfg, "grade_horizon", None):
+        cmd += ["--horizon", str(cfg.grade_horizon)]
+    if getattr(cfg, "grade_warm_start", False):
+        cmd.append("--warm_start")
     env = dict(os.environ, OMNI_KIT_ACCEPT_EULA="YES")
     _log(f"  grading {os.path.basename(ckpt)} ...")
     try:
@@ -484,6 +489,10 @@ def main():
     p.add_argument("--eval_envs", type=int, default=64)
     p.add_argument("--eval_steps", type=int, default=1000)
     p.add_argument("--grade_timeout", type=int, default=1800)
+    p.add_argument("--grade_horizon", type=int, default=None,
+                   help="MPPI horizon for grading. Set it to the fleet's TRAINING horizon; otherwise "
+                        "an H=6 arm gets judged with an H=3 planner.")
+    p.add_argument("--grade_warm_start", action="store_true", help="MPPI warm start when grading.")
     p.add_argument("--grade_plant", choices=["baseline", "modeled"], default="modeled",
                    help="plant for grading eval (bootstrap fleet trains on baseline -> grade baseline).")
     p.add_argument("--grade_objective", choices=["walk", "stability"], default="walk",

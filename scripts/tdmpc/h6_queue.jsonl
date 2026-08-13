@@ -1,0 +1,33 @@
+# TD-MPC2 H=6 fleet — run with
+#   supervisor.py --queue scripts/tdmpc/h6_queue.jsonl --run_tag h6 --grade_plant baseline
+#     --grade_horizon 6 --grade_warm_start --max_env_steps 3000000 --min_judge_steps 2000000
+#
+# WHY (measured 2026-08-13, fidelity audit vs tdmpc2_official + the honest fall metric):
+#   Planning at H=6 instead of H=3 on ALREADY-TRAINED checkpoints removes 12.5-18.7 pp of the
+#   episode fall rate, on all three walkers tested, with tilt DOWN and speed UP. No weight in the
+#   world model depends on horizon, so that was free. H=3 = 0.12 s of lookahead against a ~0.7 s
+#   gait cycle; the planner could not see a fall coming. H=12 buys nothing further and costs speed,
+#   so the learned dynamics are good to ~0.25 s and no further.
+#
+# THE QUESTION THIS FLEET ANSWERS: does TRAINING at H=6 beat PLANNING at H=6 with an H=3-trained
+# model? It should -- the consistency loss would fit 6-step rollouts and the value function would
+# match the horizon actually used -- but that is a hypothesis, not a measurement.
+#
+# BASELINE TO BEAT (lean-C, trained H=3, planned at H=6, graded with objective walk_v2):
+#   fitness 0.0807 | falls 18.8% of episodes | tilt 9.1 deg | lean -3.9 | fwd 0.312 (1.04x cmd)
+#   PPO reference: fitness 0.2571 | falls 6.2% | tilt 9.7 | fwd 0.281
+# Every arm is lean-C's exact recipe (soft gate 0.95/0.15, demo-anchored buffer, bc_plan_std 0.15,
+# 400k seed, 20k pretrain, baseline plant, fixed cmd 0.3) PLUS --horizon 6 --mppi_warm_start, so
+# the H=3-vs-H=6 comparison is single-variable against a policy we have already measured.
+#
+# COST: MPPI is linear in H, so collection runs ~2x slower than the lean fleet -- expect ~8 h/arm,
+# ~33 h total. Arms are ordered so the primary question is answered first; stopping after idx 1
+# still yields the answer plus its replicate.
+#
+# GRADING: objective walk_v2 (fitness = track * safety * (0.6*posture + 0.4*smooth)), which has
+# 21.4x dynamic range across our real policies where v1 had 1.01x. Win bar: fwd>=0.25,
+# |lean|<=15 deg, AND pct_episodes_with_fall <= 10%. Nothing we have trained passes it yet.
+{"name": "h6-base", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 11, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15}, "notes": "THE question: train at H=6 vs lean-C's train-at-3-plan-at-6 (fitness 0.0807, 18.8% falls). Single variable -- everything else is lean-C's recipe. If this does not beat 0.0807 then the H=6 gain is purely an inference-time effect and training horizon is not worth its 2x collection cost."}
+{"name": "h6-base-rep", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 12, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15}, "notes": "Identical to h6-base on a different seed. Deliberate replicate: this project has been burned once already by treating the two 07-24 runs as replicates when they shared seed 0 and an identical net init. Without this, the primary result is n=1 and the honest fall metric has ~3.5 pp of binomial SE at 192 episodes."}
+{"name": "h6-utd1", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 13, "updates_per_step": 32, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000", "--horizon", "6", "--mppi_warm_start"], "notes": "D3 from the audit: our updates_per_step is applied per ITERATION and each iteration collects num_envs=32 transitions, so every run labelled 'UTD 16' has actually been 0.5 updates per transition -- half the reference's 1.0. 32 restores parity. Keeps lean-C's soft gate so UTD is the single variable vs h6-base.", "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15}}
+{"name": "h6-flat", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 14, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5}, "notes": "The reward-SHAPE lever, now on top of a working horizon. The upright gate has a flat interior (_tolerance is exactly 1.0 inside its bound) so it can bound tilt but never minimize it; flat_orientation_l2 is L2 on the gravity xy components -- minimized only at vertical, gradient everywhere, and it sees LATERAL roll, which torso_lean_fwd_deg cannot. PPO runs this at -2.183; -0.5 is a deliberately cautious first step given the journal's history of extra penalties barbering the gait."}
