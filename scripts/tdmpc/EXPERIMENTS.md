@@ -138,3 +138,339 @@ Warm-start from `_preserved/stand_phase1_550176_verified.pt` (clears the cold-st
 Watch: does ground_speed climb toward the command (stepping) while staying upright/smooth. Stability
 weights are intentionally modest for run 6 — if it walks but is jerky, raise ang_vel/base_accel/
 action_rate; if it stands but won't step, raise feet_air_time / lower stability.
+
+## STABILITY broad phase A–D (graded 2026-07-24 → 07-25, 2M each) — TRACKING COLLAPSE
+| run | track_lin_vel wt | extra lever | fitness | track_err_lin | rocking_rms | fwd/cmd speed |
+|-----|------|------|------|------|------|------|
+| A-track | 1.0 | none | 0.0002 | 0.279 | 0.839 | 0.062 / 0.453 |
+| B-gyro | 1.0 | ang_vel_xy -0.05 | 0.0001 | 0.292 | 0.821 | 0.049 / 0.453 |
+| C-level | 1.0 | flat_orient -0.3 | 0.0001 | 0.344 | 0.949 | 0.031 / 0.453 |
+| D-novert | 1.0 | lin_vel_z -0.1 | 0.0001 | 0.284 | 0.865 | 0.043 / 0.453 |
+
+**Finding:** all 4 collapse the warm-started gait. TB shows every run starts at ground_speed ~0.48 m/s
+and decays to ~0.09–0.20 by end while training return *rises* (8→15). At track_lin_vel weight 1.0 the
+reward optimum is to stand/shuffle (upright/stand terms beat tracking), so the robot barely translates
+(~0.05 m/s vs 0.45 commanded) and rocks hard (rocking_rms ~0.85). Quietness levers (B–F) are moot until
+the base omni gait tracks. Not a grader bug (grades match TB, raw metrics vary per run; pi_loss ~-0.25).
+**Response:** appended G/H (track 4x/6x, 5M), I (4x+level), J (4x, 10M) to restore tracking dominance.
+Expect E-smooth/F-fullstack (already queued ahead) to also collapse — extra penalties on weak tracking.
+
+## STABILITY wake 3 (2026-07-25): E/F + G-track4x confirm STANDING-ATTRACTOR collapse
+- E-smooth / F-fullstack (2M): fitness 0.0003, forward_speed 0.05–0.06 vs 0.45 cmd — collapsed like A–D.
+- G-track4x (live, 5M, track lin 4.0/ang 2.0): STILL collapses. TB starts 0.526 m/s → plateaus ~0.14;
+  training return *rises* to 32.5 while speed falls. So 4× tracking authority did NOT hold the gait.
+- **Root cause (from reward config read):** stand_walk(w1.0, move_weight 0.75 → 0.25 baseline) + upright_bonus(0.3)
+  reliably pay every step for standing upright at height; feet_air_time(1.5) + track_lin_vel only pay for a
+  *proper omni gait* the forward-only warm-start can't produce under varied_commands → no gradient to move,
+  so standing upright is the safe optimum. Boosting tracking weight just raises return without recovering speed.
+- **Response:** appended K/L/M — remove the standing payoff (upright_bonus→0, stand_walk move_weight→0.95/0.9),
+  keep 4× tracking, M also boosts feet_air_time→2.5. If standing stops paying, moving-and-tracking is the only
+  way to score. H(6×)/I(4×+level)/J(4×,10M) still queued ahead as brackets on tracking-weight & steps (expected
+  to also collapse — will confirm the lever is standing, not tracking authority). No machinery issue (grades match
+  TB, raw metrics vary per run, pi_loss ~-0.2, disk 14%).
+
+## STABILITY wake 4 (2026-07-25): G-track4x FINAL + H confirm — tracking-weight/steps are the WRONG lever
+- G-track4x FINAL (5M): fitness 0.0001, forward_speed 0.039, track_err_lin 0.372 — WORSE than the 2M runs.
+  More steps of the same reward drive it DEEPER into the standing basin (5M worse than 2M). Steps don't help.
+- H-track6x (live): gs 0.494 -> 0.188 monotonic decay, return 49.5. 6× tracking collapses too, just slower.
+- Finding now 7-strong (A–F @2M + G @5M) + H: the collapse is the STANDING ATTRACTOR, independent of
+  tracking weight (1×/4×/6×) and steps (2M/5M). NOT a grader bug — grades track the collapse, raw metrics
+  vary per run, no duplicate grades, pi_loss ~-0.2, no divergence.
+- **Response:** queued N/O = anti-standing configs (K/M overrides) at 10M, for the "learn omni from scratch
+  with the right reward" test. Plan: abort J (idx9, 4×track @10M — confirmed-doomed) when it becomes current
+  to save ~10h GPU for the K/L/M anti-standing test. K's ground_speed trajectory is the decisive read next.
+
+## STABILITY wake 5 (2026-07-26): H final + command-config recon (no new runs of interest)
+- H-track6x FINAL (idx7): fitness 0.0001 — as predicted. 8 collapses now (A–H), all <=0.0003.
+- Now running I-track4x (idx8, 4×+level, zero info); J (idx9, 4×@10M) next; K-nostand (idx10) is the real test.
+- **Command-config recon:** `--varied_commands` uses env range lin_vel_x=(-0.8,0.8) (incl. BACKWARD) + lateral
+  + yaw, rel_standing_envs=0.02. So the forward-only warm-start must learn back/lateral/turn from scratch.
+  rel_standing is only 2% -> NOT the driver; the standing attractor is REWARD-side (stand_walk baseline +
+  upright_bonus under nonzero commands), which K/L/M already target. `_apply_overrides` runs BEFORE the
+  varied_commands block and that block only sets heading_command=False, so `commands.base_velocity.ranges.*`
+  and `.rel_standing_envs` ARE overridable -> a forward->omni CURRICULUM is available as a fallback if the
+  reward-side anti-standing fix is insufficient. Did NOT queue a rel_standing spec (2% is negligible).
+- **Plan:** abort J (10M waste) when it becomes current next wake -> launches K. Watch K's ground_speed.
+
+## STABILITY wake 6 (2026-07-26): I graded, J ABORTED -> launching K (anti-standing test)
+- I-track4x FINAL (idx8): fitness 0.0, forward 0.033 — collapsed (worst variant: 4×track + level penalty).
+- 9 runs now (A-I) all collapse to standing: tracking weight (1×/4×/6×) and steps (2M/5M) are the WRONG levers.
+- J-track4x (idx9, 4×@10M): live TB confirmed same collapse (0.526->0.155 plateaued) at only ~1M/10M steps.
+  ABORTED via control_stability.json to redirect ~10h GPU to the anti-standing test. Abort consumed cleanly
+  (supervisor killed J, cleared control, grading partial then advancing to K idx10).
+- **K-nostand (idx10) is the pivot:** upright_bonus->0, stand_walk move_weight 0.75->0.95, 4× tracking, 5M.
+  First run where standing stops paying. Watch its ground_speed next wake — if it holds the warm-start gait
+  (~0.4-0.5 m/s) instead of decaying to ~0.15, the collapse is broken and we start narrowing to the win bar.
+  If it also freezes, the forward->omni command curriculum (ranges ARE overridable) is the ready fallback.
+- Queue after K launches: pending 5 (K,L,M,N,O), above floor. Machinery healthy (abort worked, grades track TB).
+
+## STABILITY wake 7 (2026-07-26): ROOT CAUSE FOUND — omni collapse is a command-curriculum WIRING gap
+- K/L-nostand (idx10/11) COLLAPSED too (K: fitness 0.0001, forward 0.048, TB 0.498->~0.12). Removing the
+  reward-side standing terms (upright_bonus->0, move_weight->0.95) did NOT break the collapse. Anti-standing
+  hypothesis DISPROVEN.
+- **Root cause:** the TRACKING REWARD itself rewards standing over wrong-direction motion for any command the
+  forward-only warm-start can't execute (standing err=|cmd| < wrong-dir err). Under full omni cmds
+  (lin_vel_x=(-0.8,0.8) incl. backward + lateral + yaw) the min-error policy is to FREEZE. The remedy — the
+  tracking-gated command curriculum (fixed in commit 4b4cacb) — is OFF: config.py cmd_curriculum=False,
+  train.py has --cmd_curriculum but bootstrap.py (the stability entry) does NOT wire it, and --overrides only
+  patches env_cfg not agent_cfg. No [curriculum] line in any stab log. 11 runs corroborate.
+- **Actions:** (1) ESCALATED to ADVISOR_ALERTS.md (OTHER): wire --cmd_curriculum into bootstrap.py (mirror
+  train.py:184-189). (2) Queued P-S width-sweep (idx15-18): 4x-tracking (same reward that collapsed on omni),
+  command range narrowed via env_cfg overrides — P forward-only, Q +lateral, R +backward, S near-full. Isolates
+  which command dimensions the warm-start can hold. READ VIA TB ground_speed (graded on full omni -> low
+  fitness by construction). (3) ABORTED the dead anti-standing tail L/M/N/O (idx11-14, ~28M steps incl. two
+  10M runs) to launch P now. P-cur-fwd running.
+- **Next wake read:** if P HOLDS the gait (TB ground_speed ~0.4) while G/K collapsed on the same reward, the
+  command-width mechanism is PROVEN and the curriculum is the confirmed fix. Q/R/S then locate the threshold.
+
+## STABILITY wake 8 (2026-07-26): P width-sweep supports command-width mechanism; curriculum wiring still pending
+- P-cur-fwd (idx15, FORWARD-ONLY range vx 0-0.5): grade 0.0002 BUT that's a full-omni eval (grader always uses
+  commanded_speed~0.45, incl. back/lat/yaw P never trained) so the scalar is uninformative for P. Real signals:
+  TB ground_speed settles ~0.17-0.24 ~= P's mean forward command (~0.25), and return=74 >> omni runs' 15-49 on
+  the SAME 4x tracking reward. A standing policy would bank the same ~15-49 as the omni runs; 74 means P is
+  EARNING the tracking reward -> forward tracking WORKS. Supports: collapse is command-WIDTH (omni dirs the
+  fwd-only warm-start can't do), not the online refine per se.
+- Q-cur-lat (idx16, +lateral) running, trending worse (mean_last10 ~0.09) -> adding lateral degrades, threshold
+  effect as expected.
+- Engineer has NOT yet wired --cmd_curriculum into bootstrap (grep=0); escalation from wake 7 still pending.
+- **Action:** appended T (mild widen: vx0-0.6, lat/yaw +-0.2, 5M) and U (moderate: vx -0.4..0.6, lat/yaw +-0.3,
+  5M), both warm from the known-good walker, to map how far the range widens before tracking breaks (robust vs
+  chaining from P's uncertain-quality ckpt). Queue 21 specs, pending 5. No abort (Q healthy), escalation stands.
+- **Next read:** if T (mild omni) holds tracking from the walker, the curriculum's early stages are survivable
+  directly; if only forward holds, the curriculum must COMPOUND -> the --cmd_curriculum wiring is the critical path.
+
+## STABILITY wake 9 (2026-07-27): width-sweep = MONOTONIC degradation with command width
+- Q/R graded, S live. Achieved/commanded ratio + return both fall monotonically with width:
+  P(fwd) 0.60/ret74 -> Q(+lat) 0.42/58 -> R(+back) 0.28/55 -> S(+yaw) ~/50. Forward tracks; each added
+  dimension degrades. Even MILD widening (Q) degrades DIRECTLY from the walker -> curriculum must COMPOUND.
+- Engineer still hasn't wired --cmd_curriculum (grep=0). Strengthened the wake-7 escalation with this evidence
+  (it is now the SOLE path; 18 runs exhaust reward/weight/step levers).
+- **Action:** appended V/W = COMPOUNDING-chain specs (warm from P's forward-tracker ckpt + add lateral (V) /
+  lateral+yaw (W), forward vx). KEY TEST: does building on P beat widening from the walker (Q)? If yes, I
+  hand-crank the curriculum stage-by-stage; if V~=Q, only the in-run ramp works. Queue 23 specs, pending 5.
+  Kept T/U (mild/moderate @5M from walker) — they test the STEPS axis (does more time help mild widths?).
+
+## STABILITY wake 10 (2026-07-27): steps don't rescue direct widening -> prioritized the compounding test
+- T-cur (mild widen vx0-0.6/lat+yaw+-0.2 @5M from walker): ratio ~0.44 (gs 0.144 / mean cmd 0.33), return 59
+  == Q's 0.42 at 3M. MORE STEPS DO NOT rescue direct widening from the walker. T/U redundant with Q/R.
+- Aborted T (idx19) + U (idx20) to launch the decisive COMPOUNDING test V (idx21, chain from P's forward-tracker
+  + lateral). Appended X (chain from P + backward-only) and Y (chain from P + near-full @5M). Queue 25 specs,
+  pending 4 (V/W/X/Y). All four are stage-2 compounding tests from P across different added dimensions.
+- Engineer STILL hasn't wired --cmd_curriculum (grep=0, ~30h post-escalation). Manual compounding is now the
+  primary path; V/W/X/Y answer whether it works.
+- **Decisive next read:** compare V/W/X (chain from P, single-dim adds) achieved/commanded ratio vs Q/R (same
+  widths from the walker). If chaining holds ~0.6 where direct-widening gave ~0.3-0.4, COMPOUNDING WORKS -> I
+  hand-crank stage 3+ from the winning ckpt. If V~=Q, only the in-run --cmd_curriculum ramp can solve it and the
+  escalation is the sole path.
+
+## STABILITY wake 11 (2026-07-27): COMPOUNDING FAILS -> manual paths exhausted, in-run curriculum is sole path
+- V-chain (idx21, warm from P + lateral +-0.2): ratio 0.40 (gs 0.111/mcmd 0.28) == Q's 0.42 (same width from
+  walker). Compounding via warm-start chaining does NOT beat direct widening; online refine re-collapses
+  regardless of init. W (live, +lat+yaw) ~0.49 (noisy, not conclusive).
+- Manual levers now exhausted across ~22 runs: reward weights, steps, standing-terms, direct-widen, compounding.
+  Only the IN-RUN --cmd_curriculum ramp (tiny tracking-gated width increments) is untested and plausibly works.
+- **Actions:** (1) hardened escalation (UPDATE 2): compounding also fails -> --cmd_curriculum is the definitive
+  sole path (still unwired, grep=0, 30h+). (2) appended Z1/Z2 = granularity probe (tiny +-0.1 lateral / -0.15
+  backward chained from P) — the one thing distinguishing manual chaining from the in-run ramp. Queue 27, pending 5.
+- **Next read:** if Z1/Z2 (tiny increments) hold ~0.6 where V(+-0.2) gave 0.40, fine-grained manual chaining is
+  viable and I hand-crank many tiny stages; if they also degrade, manual chaining is definitively dead and the
+  search is blocked on the --cmd_curriculum wiring until the engineer/human acts.
+
+## STABILITY wake 12 (2026-07-27): compounding DEAD (3 corroborations) -> testing exploration levers
+- V/W/X (chain from P + lateral / lat+yaw / backward): ratios 0.40 / 0.40 / 0.30 == direct-widen Q/R (0.42/0.28).
+  Compounding via warm-start chaining is definitively dead across all dimensions; online refine re-collapses
+  regardless of init. Y (near-full @5M) running = 4th confirmation.
+- SEARCH BLOCKED: grader is always full-omni, so nothing grades >~0 until the policy tracks omni, which needs the
+  incremental --cmd_curriculum ramp (still unwired, grep=0, 36h+ post-escalation). Manual levers exhausted:
+  reward weights, steps, standing-terms, direct-widen, compounding.
+- **Action:** queued 2 EXPLORATION-lever probes (the one untested seeding dim; all prior runs used identical BC):
+  AA (minimal BC: seed 50k/pretrain 2k) and AB (doubled plan-exploration bc_plan_std 0.6), both +lateral from
+  walker. Tests whether less anchoring / more exploration lets the refine learn lateral (ratio > V's 0.40). Plus
+  Z1/Z2 (granularity) still queued. Queue 29, pending 5. No abort (Y is a useful 4th corroboration, keeps GPU busy).
+- **Read:** if AA/AB/Z1/Z2 all == ~0.40, EVERY within-advisor lever is exhausted and the search is hard-blocked
+  on the --cmd_curriculum wiring (engineer/human action required). If any breaks 0.40, that's the new thread.
+
+## STABILITY wake 13 (2026-07-28): granularity marginally helps (Z1 0.49 > V 0.40); starting fine-grained chain
+- Z1 (tiny lat +-0.1 chain from P): ratio ~0.49 vs V (+-0.2) 0.40 -> finer increment helps a little, in the
+  predicted direction, but still far below the ~0.6 fwd baseline and nowhere near the win bar (needs ~0.9+).
+  Y = 4th compounding confirmation (0.0001). Z2 (tiny back) live, high return 81.7.
+- Confirms granularity matters but manual runs can't reach the ~50k-step increments the in-run --cmd_curriculum
+  ramp uses. Curriculum still unwired (grep=0, ~42h). AA/AB (exploration levers) still queued.
+- **Action:** queued AC/AD = FINE-GRAINED MANUAL CHAIN from Z1 (widen lat to +-0.15 / add yaw +-0.1). Tests
+  whether chaining SMALL increments ACCUMULATES where coarse +-0.2 compounding (V/W/X) re-collapsed. If AC/AD hold
+  ~0.5 at wider range, hand-cranked fine curriculum is viable and I chain stage 3+ toward omni; if they drop to
+  ~0.4, only the in-run ramp is fine enough. Queue 31, pending 5.
+- **Reality check:** all manual levers top out ~0.4-0.5 ratio, far from the win bar. Without --cmd_curriculum the
+  full-omni goal is likely unreachable this week; the fine-chain is the best-available approximation and the GPU
+  stays productive, but the clean fix remains the escalated bootstrap wiring (human/engineer action).
+
+## STABILITY wake 14 (2026-07-28): investigation COMPLETE - ceiling ~0.5 across all levers; final escalation
+- AA (minimal BC): ratio 0.49; Z2 (tiny backward): 0.39. BC/exploration is NOT the cause. AB (high plan-std) live.
+- CEILING CONFIRMED ~0.5 achieved/commanded across EVERY advisor lever (weights/steps/standing/direct-widen/
+  compounding/granularity/exploration). Win bar needs ~0.9+. Full-omni goal is HARD-BLOCKED on --cmd_curriculum
+  wiring (grep=0, ~48h, engineer not acting).
+- **Actions:** (1) wrote FINAL/HUMAN-ACTION-REQUIRED escalation in ADVISOR_ALERTS.md (full lever table + the exact
+  6-line bootstrap.py fix). (2) queued AE (stack the marginal helpers: fine width + low BC + high std, 5M -- last
+  shot at 0.5) and AF (FALLBACK DELIVERABLE: warm P + quietness levers on forward+mild range @10M -- first quietness
+  tuning on a tracking-capable base; a real stable forward walker if the curriculum never lands). Queue 33, pending 5.
+- **Posture going forward:** the strategy question is settled. Remaining wakes = keep GPU on the deliverable/last
+  probes, watch for the curriculum getting wired (grep cmd_curriculum in bootstrap.py) -- the moment it is, pivot ALL
+  specs to full-omni + --cmd_curriculum runs. Until then, no new manual lever is worth much; avoid churning repeats.
+
+## STABILITY wake 15 (2026-07-28): monitoring - ceiling holds, queue busy ~24h, watching for curriculum wiring
+- AB (high plan-std): ratio 0.42, fit 0.0001 -> exploration confirmed not the lever. AC (fine-chain from Z1,
+  live) marginally higher ~0.56 -- watch its final grade, but still far from win bar (~0.9+).
+- No action: queue 4 pending (AC 3M/AD 3M/AE 5M/AF 10M = ~24h compute, no idle risk); strategy settled (blocked on
+  --cmd_curriculum, grep=0, ~54h). Avoided churning more ceiling repeats. FINAL escalation stands (wake 14).
+- WATCH each wake: grep cmd_curriculum scripts/tdmpc/bootstrap.py -- if it becomes >0, PIVOT all specs to
+  full-omni + --cmd_curriculum (drop the ranges.* overrides) and the search unblocks.
+
+## STABILITY wake 16 (2026-07-28): fine-chain is the best manual thread (~0.55), slowly accumulating
+- AC (Z1+lat0.15) 0.51, AD (Z1+yaw0.1) 0.57 -- best manual results yet, vs ~0.40 coarse. Fine granularity DOES
+  accumulate a little through chaining (validates the curriculum principle). But ranges still tiny (lat/yaw +-0.1-0.15
+  vs full omni vx+-0.8); can't reach win-bar omni manually in the time left. AE (combine) live ~0.54.
+- Curriculum still unwired (grep=0, ~60h). Best fitness 0.0003. Machinery healthy, disk 14%.
+- **Action:** chained stage 3 from AD (best base): AG (widen lat->0.2/yaw->0.15) + AH (add tiny backward). Grows the
+  hand-cranked curriculum; the widest range that still holds ~0.5+ becomes the best fallback deliverable. Queue 35, pending 4.
+- Continue watching grep cmd_curriculum -> pivot to full-omni + --cmd_curriculum the moment it's wired.
+
+## STABILITY wake 17 (2026-07-29): ceiling holds (AE 0.46); fine-chain still best (AG ~0.58); deliverable notes
+- AE (combine marginal helpers) 0.46 -> they do NOT stack past 0.5. AF (deliverable @10M): vertical_speed 0.032
+  (BELOW win bar!) but rocking 0.730 / fwd 0.029 polluted by the full-omni grader (flails on un-trackable cmds);
+  true forward-range quietness unmeasurable via harness. AG (fine-chain st3) holds ~0.58 at wider range.
+- Curriculum unwired (grep=0, ~66h). Best fitness 0.0003. Machinery healthy.
+- **Action:** chained stage 4 @5M from AD: AI (add tiny back + lat/yaw 0.2) and AJ (forward-hemisphere wide: vx0-0.6
+  lat0.25 yaw0.2, no backward -- tests if a fwd+turn+strafe walker reaches higher ratio, best achievable deliverable).
+  Queue 37, pending 4. Watching grep cmd_curriculum for the unblock.
+
+## STABILITY wake 18 (2026-07-29): fine-chain does NOT accumulate -> consolidate best config as deliverable
+- AG (st3, lat0.2/yaw0.15) final 0.44, AH (+back0.15) 0.34 -- DOWN from AD's 0.57 at narrower range. The fine-chain
+  degrades with width just like direct widening (0.57->0.44->0.34). CONCLUSION: every manual approach is capped by
+  command width; no manual path holds tracking at wide range. Only the in-run --cmd_curriculum ramp can. (grep=0, ~72h)
+- **Pivot:** stop churning capped-width probes. Queued AK (10M) + AL (20M) = consolidate AD's best config (narrow
+  fwd+lat0.1+yaw0.1, ratio 0.57) + mild quietness (flat_orient -0.3, ang_vel_xy -0.05) into the best-achievable STABLE
+  narrow-omni walker (the fallback deliverable). These occupy the GPU ~30h, ending the per-wake churn. Queue 39, pending 4.
+- Best config so far = AD (fwd+lat0.1+yaw0.1, ratio 0.57). Watching grep cmd_curriculum -> if wired, ABORT AL and
+  pivot ALL specs to full-omni + --cmd_curriculum (the only path to the actual win bar).
+
+## STABILITY wake 19 (2026-07-29): width cap re-confirmed (AI 0.36); holding on deliverable consolidation
+- AI (chain4 @5M wider+back) 0.36 -- more steps don't beat the width cap. Consistent with all prior. best fit 0.0003.
+- Curriculum unwired (grep=0, ~78h). Queue now AJ(5M)/AK(10M)/AL(20M)/AM(10M) = ~45M compute (~2 days), no idle risk.
+- Added AM = deliverable with STRONGER quietness (flat_orient -0.6, ang_vel -0.1) on AD's narrow range, to tune the
+  clean-IMU half on the achievable range. Best of AK/AL/AM is the fallback stable-walker deliverable.
+- Holding pattern: settled/blocked. Watching grep cmd_curriculum -> pivot to full-omni + --cmd_curriculum when wired.
+
+## BOOTSTRAP-FROM-PPO (07-24) — the win, and the POSTURE hole it hid (measured 2026-08-12)
+Belated journal entry: the two bootstrap wins were never written up here (they live in
+`bootstrap_queue.jsonl` + `supervisor_journal_bootstrap.jsonl`). Both cleared the win bar —
+A-base fitness 0.913 / fwd 0.363, B-strongbc 0.924 / fwd 0.363, 0 falls, held to 3M — and are the
+ONLY 2 of 52 graded evals in this project ever to exceed 0.073 m/s. Seeding the replay buffer from
+`deploy/walk/policy.pt` genuinely escaped the standing basin that the whole reward search could not.
+
+**Then the operator watched it: it walks bent far forward.** Measured, not eyeballed:
+
+| policy | fwd speed | cmd | torso lean | tilt (mean/max) |
+|---|---|---|---|---|
+| PPO demo `deploy/walk/policy.pt` | 0.300 | 0.300 | **-3.3 deg** (nose-UP) | — |
+| bootstrap winner `walk_win_0.924` | 0.363 | 0.300 | **+27.3 deg** | 29.2 / **98.2** deg |
+
+So the 3M-step online phase did not *refine* the demo — it drifted 30 deg off it and overshot the
+command by 21%. The demo was already the better policy on both axes.
+
+**Root cause (mechanical, verified):** nothing in the objective priced torso attitude.
+`gated_locomotion` computed `upright = _tolerance(up, lower=upright_min, margin=upright_min)` with
+`upright_min=0.8` — margin hardwired to the threshold makes the gate FLAT over every posture a
+walker can hold: a 30-deg lean cost **0.0%** of reward, 45 deg cost 3.1%. Meanwhile leaning forward
+directly buys the `move` term, and `flat_orientation_l2` (the one term that would have caught it)
+sits at weight 0. The policy did exactly what it was asked. Secondary: the 400k seed is the OLDEST
+data in a 1M ring, so it was fully evicted by ~1.0M of 3M steps (confirmed: `buffer/size` hits 1e6
+at ~620k) and the BC-via-prior anchor died with it — nothing held the gait near the demo after that.
+Also note the 98-deg tilt peak: under `NonEpisodicTerminationsCfg` an env can go past horizontal and
+recover without ever registering a "fall", so "0 falls" is a weaker claim than it reads as.
+
+**Fixes landed (this commit):**
+- `gated_locomotion` gains `upright_margin` (default `None` = legacy flat behaviour, so no earlier
+  run changes). `0.97/0.10` = free to 15 deg, 0.81 at 20, 0.24 at 27, 0.005 at 35.
+- Posture is now MEASURED everywhere: `torso_lean_fwd_deg` / `torso_tilt_deg` / `_max` in
+  eval_smoothness, `collect/torso_lean_deg` in TB + the trainer's step line, and a lean readout in
+  bootstrap's phase-0 so we know whether the DEMO leans before trusting a seed.
+- `grade_run.py` win bar gains `WIN_LEAN_DEG = 15`. Runs graded before the metric existed are not
+  judged on it; **the 07-24 winners would fail the new bar.**
+- `--buffer_size` on bootstrap.py = the demo-ANCHOR lever (size > seed + budget -> seed never evicts).
+- Two review bugs fixed: the seed loop stepped the env with the UNCLAMPED PPO action while storing
+  the clamped one (`mdp.last_action` feeds the raw value back as 12 of 45 obs dims, so seed states
+  were unreachable online), and the seed->online seam was never flagged `time_out` so sampled
+  windows could straddle `TdmpcTrainer`'s `env.reset()`.
+
+**Caveats on the 07-24 result that stand regardless (from the 08-12 code review):**
+- Both "replicates" ran `seed: 0` with `torch.manual_seed` before net construction -> identical
+  init. That is n=1 with one perturbation, not two runs. It explains fwd agreeing to 0.1%
+  (0.36312 vs 0.36348) while base_accel differed 18%. The lean fleet uses seeds 1-4.
+- The bootstrap fleet switched to `--plant baseline` while the entire prior reward search ran on
+  `modeled`. The headline 0.363-vs-0.03 contrast is two changes, not one; the matched control
+  (scratch + fixed cmd + baseline plant) has still never been run. Partial defence: the 40 later
+  varied-command bootstrap runs are all baseline-plant and still collapse, so the easy plant is not
+  sufficient on its own.
+- `fitness` is near-constant for any non-faller: `walk_gate` saturates at 0.12 m/s, `SURVIVE_TARGET_S`
+  (20 s) IS the max episode length, `upright`=1 at 0 falls -> fitness == 0.8 + 0.2*smooth. Quote
+  `forward_speed_mean` + `is_win`, never the fitness scalar.
+
+## ANTI-LEAN fleet (launched 2026-08-12) — `lean_queue.jsonl`, `--run_tag lean`
+Four arms x 3M, baseline plant, fixed cmd 0.3, otherwise identical to bootstrap-B-strongbc, seeds 1-4.
+Crosses the two levers: PRICE THE LEAN (upright gate firm 0.97/0.10 vs soft 0.95/0.15 vs additive
+`flat_orientation_l2` -0.5) x ANCHOR THE DEMO (`--buffer_size 3500000` -> seed resident all 3M, ~12%
+of the buffer at the end, vs today's full eviction at 1M).
+- **A firm** (gate only, seed still evicts) — does pricing lean work at all? Does it drift back after 1M?
+- **B firm+anchor** — the main bet; both mechanisms pull toward the upright demo.
+- **C soft+anchor** — safety arm against the recurring "extra reward pressure barbers the gait" failure.
+- **D flat+anchor** — additive lever instead of multiplicative; C-level tried this weight under VARIED
+  commands and collapsed, it deserves one fair shot on a held fixed-command walk.
+Watch `collect/torso_lean_deg` next to `collect/ground_speed_mps`: the failure to catch early is
+speed holding while lean grows (the 07-24 mode), or lean going to ~0 because it stopped walking.
+
+### lean-A-firm RESULT (power-cut at 2.80M/3.00M, graded manually 2026-08-12)
+Mains dropped at ~19:41 (circuit blew), 93% through arm A. Graded `model_2750880.pt` (last intact
+checkpoint; `model_2800896.pt` was truncated to 0 bytes mid-write). NOT resumed — lean had plateaued
+since ~1.2M and bootstrap.py has no resume, so the last 7% would have cost a full ~4 h re-run.
+
+| | 07-24 winner | lean-A @2.75M |
+|---|---|---|
+| fwd m/s | 0.363 | 0.332 |
+| **torso lean** | **+27.3 deg** | **-3.8 deg** |
+| torso tilt (mag) | 29.2 | 19.3 |
+| tilt max | 98.2 | 101.8 |
+| rocking_rms | 1.449 | 1.230 |
+| base_accel_rms | 2.887 | 2.429 |
+| falls | 0 | 0 |
+| fitness | 0.924 | **0.933** (best recorded) |
+
+**THE GATE WORKS — and it is not enough.** Collection lean went +25.7 -> -1.3 deg within 200k steps.
+Speed cost 9% (0.363 -> 0.332), which also improved command tracking (1.21x -> 1.11x of the 0.3 cmd);
+rocking, accel and action-rate all improved. But two things the run taught us that the design missed:
+
+1. **The gate has a FLAT INTERIOR.** `_tolerance` returns exactly 1.0 inside its bound, so the gate
+   BOUNDS tilt and can never MINIMIZE it — the policy parks at the edge of whatever free zone it is
+   given. Residual tilt magnitude is still 19.3 deg with tilt_max ~102 deg (barely moved). The
+   lean/tilt gap is the diagnostic: the 07-24 winner had lean ~= tilt (27.3 vs 29.2) = a STEADY
+   forward pitch; lean-A has -3.8 vs 19.3 = the mean is gone but it now WOBBLES. Note also that
+   `torso_lean_fwd_deg` averages a SIGNED value, so a +-20 deg fore-aft rock reads as ~0, and lateral
+   roll is invisible to it entirely — always read it beside `torso_tilt_deg`.
+2. **The gate is DIRECTION-AGNOSTIC** (it gates cos(tilt)), so +27 deg and -27 deg pay identically.
+   lean-A duly slid from +27 to -15 deg (leaning BACKWARD) at no reward cost. This also exposed a bug
+   in the new win bar — `lean <= 15` is one-sided and a -17 deg backward lean would have PASSED. Now
+   `abs(lean) <= WIN_LEAN_DEG`.
+
+**Unplanned result — direct evidence for the demo-anchor hypothesis.** The collection lean sat within
+a few degrees of the demo's -5.5 for the first 1M steps, then slid hard exactly where the seed is
+fully evicted:
+```
+0.20M -1.3   0.40M -6.4   0.60M -4.3   0.80M -5.7   1.00M -9.6  <-- seed fully evicted
+1.20M -18.7  1.40M -11.7  1.80M -16.5  2.60M -15.1
+```
+This is the F9 drift mechanism showing up unprompted, and it makes lean-B (firm + anchor) a sharp
+falsifiable test: lean should hold near -5 past 1M instead of sliding to -15.
+
+**Appended lean-E-firm-flat** (seed 5): firm gate + `flat_orientation_l2` -0.5 + anchor. The L2 term
+is minimized only at zero tilt (gradient everywhere, and it sees LATERAL roll), so it attacks exactly
+the residual the gate structurally cannot. D isolates the L2 term alone, so E-vs-D attributes any
+gain to the combination. Fleet resumed at idx 1 (B, C, D, E), state next_index=1, runs=1, wins=1.

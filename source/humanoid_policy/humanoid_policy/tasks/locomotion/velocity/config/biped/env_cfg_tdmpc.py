@@ -76,6 +76,10 @@ class HybridRewardsCfg:
             "stand_height": _STAND_H,
             "stand_margin": 0.12,          # smooth height-gate gradient (positive margin)
             "upright_min": 0.8,
+            # How sharply the upright gate falls off below upright_min. None = legacy (margin =
+            # upright_min = 0.8), which is flat over every posture a walker can hold -> the ANTI-LEAN
+            # lever. Raise upright_min + drop this to make torso attitude actually cost reward.
+            "upright_margin": None,
             "move_weight": 0.75,           # standing-still earns only the 0.25 baseline; moving earns the rest
         },
     )

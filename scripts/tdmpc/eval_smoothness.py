@@ -112,6 +112,14 @@ def main():
     trklin_sum = torch.zeros((), device=dev)  # ||achieved_xy - commanded_xy||
     trkang_sum = torch.zeros((), device=dev)  # |achieved_wz - commanded_wz|
     cmdspd_sum = torch.zeros((), device=dev)  # commanded planar speed (context)
+    # POSTURE: the walk objective had no torso-attitude signal at all, so a policy could satisfy
+    # every metric while walking bent far forward (observed on the bootstrap winner). projected
+    # gravity in the body frame is a unit vector, ~(0,0,-1) upright, so:
+    #   g_b[0] = -sin(pitch_up)  -> lean_fwd_deg = asin(g_b[0]), POSITIVE = nose-down / leaning forward
+    #   -g_b[2] = cos(tilt)      -> tilt_deg = acos(-g_b[2]), total torso tilt magnitude
+    lean_sum = torch.zeros((), device=dev)
+    tilt_sum = torch.zeros((), device=dev)
+    tilt_max = torch.zeros((), device=dev)
     prev_action = None
 
     obs_p, obs_c = env.reset()
@@ -142,6 +150,13 @@ def main():
                 trklin_sum += (vb[:, :2] - cmd[:, :2]).norm(dim=1).sum()
                 trkang_sum += (wb[:, 2] - cmd[:, 2]).abs().sum()
                 cmdspd_sum += cmd[:, :2].norm(dim=1).sum()
+                # torso attitude (see the accumulator comment above)
+                gb = data.projected_gravity_b.torch
+                lean = torch.asin(gb[:, 0].clamp(-1.0, 1.0)) * (180.0 / 3.141592653589793)
+                tilt = torch.acos((-gb[:, 2]).clamp(-1.0, 1.0)) * (180.0 / 3.141592653589793)
+                lean_sum += lean.sum()
+                tilt_sum += tilt.sum()
+                tilt_max = torch.maximum(tilt_max, tilt.max())
                 tm = uenv.termination_manager
                 falls += (tm.dones & ~tm.time_outs).sum()
                 timeouts += tm.time_outs.sum()
@@ -178,6 +193,10 @@ def main():
         "track_err_lin_mean": float(trklin_sum.item() / denom),# ||achieved_xy - commanded_xy||
         "track_err_ang_mean": float(trkang_sum.item() / denom),# |achieved_wz - commanded_wz|
         "commanded_speed_mean": float(cmdspd_sum.item() / denom),
+        # --- POSTURE (deg): the anti-lean signals ---
+        "torso_lean_fwd_deg": float(lean_sum.item() / denom),  # +ve = leaning FORWARD (want ~0-8)
+        "torso_tilt_deg": float(tilt_sum.item() / denom),      # total tilt magnitude (want < ~12)
+        "torso_tilt_deg_max": float(tilt_max.item()),          # worst single env-step
     }
     print("[eval-smooth] RESULT " + json.dumps(metrics))
     if args_cli.out:

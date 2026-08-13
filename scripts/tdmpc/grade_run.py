@@ -40,6 +40,11 @@ ACCEL_RMS_SCALE = 6.0      # exp(-base_accel_rms / ACCEL_RMS_SCALE): smoothness 
 WIN_FWD_SPEED = 0.25       # m/s, body-frame forward
 WIN_FALL_RATE = 3.0        # per minute, max
 WIN_EP_LEN_S = 10.0        # s, min mean episode length
+WIN_LEAN_DEG = 15.0        # deg, max mean torso lean MAGNITUDE (see abs() below). The 07-24 winners
+                           # cleared every other bar while walking bent well forward: the gated
+                           # reward's upright term is flat to ~50 deg (upright_min .8 / margin .8),
+                           # so nothing in the objective saw it. Runs graded before the posture
+                           # metric existed have no `torso_lean_fwd_deg` and are not judged on it.
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 VENV_PY = os.path.join(REPO_ROOT, ".venv", "bin", "python")
@@ -71,7 +76,15 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
     quality = QW_UPRIGHT * comp["upright"] + QW_SURVIVE * comp["survive"] + QW_SMOOTH * comp["smooth"]
     fitness = walk_gate * quality
 
-    is_win = (fwd >= WIN_FWD_SPEED and fall_rate <= WIN_FALL_RATE and ep_len_s >= WIN_EP_LEN_S)
+    # posture: absent on pre-instrumentation eval JSONs -> not judged (None), never silently passed
+    lean = metrics.get("torso_lean_fwd_deg")
+    lean = float(lean) if lean is not None else None
+    # abs(): the bar is on tilt MAGNITUDE, not forward lean. lean-A-firm walked at -15 deg (leaning
+    # BACKWARD) and would have passed a one-sided `lean <= 15` check. The upright gate constrains
+    # cos(tilt), which is direction-agnostic, so the policy is free to trade forward lean for
+    # backward lean at identical reward -- and it did, within 200k steps.
+    is_win = (fwd >= WIN_FWD_SPEED and fall_rate <= WIN_FALL_RATE and ep_len_s >= WIN_EP_LEN_S
+              and (lean is None or abs(lean) <= WIN_LEAN_DEG))
     comp.update({
         "fitness": round(fitness, 4),
         "quality": round(quality, 4),
@@ -83,6 +96,8 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
             "fall_rate_per_min": round(fall_rate, 4) if fall_rate < 1e6 else "inf",
             "mean_episode_len_s": round(ep_len_s, 2),
             "base_accel_rms": round(accel_rms, 4) if accel_rms < 1e6 else "inf",
+            "torso_lean_fwd_deg": round(lean, 2) if lean is not None else None,
+            "torso_tilt_deg": round(float(metrics["torso_tilt_deg"]), 2) if "torso_tilt_deg" in metrics else None,
             "cmd_vx": cmd_vx,
         },
     })
@@ -201,7 +216,8 @@ def main():
     else:
         print(f"[grade] fitness={fitness:.4f} walk_gate={comp['walk_gate']} is_win={comp['is_win']} "
               f"(fwd={comp['_raw']['forward_speed_mean']} fall/min={comp['_raw']['fall_rate_per_min']} "
-              f"ep_len_s={comp['_raw']['mean_episode_len_s']})")
+              f"ep_len_s={comp['_raw']['mean_episode_len_s']} "
+              f"lean={comp['_raw']['torso_lean_fwd_deg']}deg tilt={comp['_raw']['torso_tilt_deg']}deg)")
     print(f"[grade] wrote {grade_out}")
     return 0
 

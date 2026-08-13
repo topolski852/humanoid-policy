@@ -40,6 +40,10 @@ class TdmpcTrainer:
             self._robot = None
         self._spd_sum = None
         self._spd_n = 0
+        # torso-lean telemetry (deg, +ve = leaning FORWARD). The walk objective had no attitude
+        # signal, so a run could look healthy on speed/return while bending further and further
+        # forward. Logged next to ground_speed so the trade is visible live, not at grading time.
+        self._lean_sum = None
         # stance-width telemetry: horizontal distance between the two feet (ankle_roll bodies).
         try:
             names = list(self._robot.body_names)
@@ -126,6 +130,8 @@ class TdmpcTrainer:
                 spd = self._robot.data.root_lin_vel_w.torch[:, :2].norm(dim=1).mean()
                 self._spd_sum = spd if self._spd_sum is None else self._spd_sum + spd
                 self._spd_n += 1
+                lean = torch.asin(self._robot.data.projected_gravity_b.torch[:, 0].clamp(-1, 1)).mean() * 57.29578
+                self._lean_sum = lean if self._lean_sum is None else self._lean_sum + lean
                 # curriculum tracking (on-GPU masked sums; synced only at the ramp check): speed
                 # PROJECTED onto the command direction, over the envs actually commanded to move.
                 if self.cmd_curriculum:
@@ -216,18 +222,22 @@ class TdmpcTrainer:
                 cmd_tag = f"cmd_scale={self.cmd_scale:.2f} " if self.cmd_curriculum else ""
                 mean_len = (sum(self.len_hist) / len(self.len_hist)) if self.len_hist else 0.0
                 mean_spd = float((self._spd_sum / self._spd_n)) if self._spd_n > 0 else 0.0
+                mean_lean = float((self._lean_sum / self._spd_n)) if self._spd_n > 0 else 0.0
                 self._spd_sum = None
+                self._lean_sum = None
                 self._spd_n = 0
                 mean_sw = float((self._sw_sum / self._sw_n)) if self._sw_n > 0 else 0.0
                 self._sw_sum = None
                 self._sw_n = 0
                 self.writer.add_scalar("collect/ground_speed_mps", mean_spd, total)
+                self.writer.add_scalar("collect/torso_lean_deg", mean_lean, total)  # +ve = leaning forward
                 self.writer.add_scalar("collect/mean_episode_len", mean_len, total)  # key signal (episodic stand)
                 self.writer.add_scalar("collect/stance_width_m", mean_sw, total)     # foot separation (target 0.25)
                 if self.cmd_curriculum:
                     self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
-                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} stance={mean_sw:.3f} {cmd_tag}"
+                      f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} "
+                      f"lean={mean_lean:+.1f}deg stance={mean_sw:.3f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 # best-checkpoint on smoothed return
                 if self.ret_hist and mean_ret > self.best_return:

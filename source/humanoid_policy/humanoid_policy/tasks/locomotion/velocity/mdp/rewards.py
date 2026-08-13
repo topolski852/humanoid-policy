@@ -45,6 +45,7 @@ def gated_locomotion(
     upright_min: float = 0.8,
     move_weight: float = 0.5,
     stand_margin: float = 0.12,
+    upright_margin: float | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Uprightness-GATED velocity-tracking reward (HumanoidBench-style), per env, in [0, 1].
@@ -67,9 +68,16 @@ def gated_locomotion(
     # got stuck in a stable crouch earning ~0 with nothing pulling it up).
     h = data.root_pos_w.torch[:, 2]
     standing = _tolerance(h, lower=stand_height, upper=float("inf"), margin=stand_margin)
-    # upright: -projected_gravity_z in body frame (~1 upright, 0 on its side)
+    # upright: -projected_gravity_z in body frame (~1 upright, 0 on its side).
+    # `upright_margin` sets how fast the gate falls off below `upright_min`. It used to be hardwired
+    # to upright_min, which with the default 0.8 makes the gate essentially FLAT over any posture a
+    # walker can hold: a 30-deg forward lean costs 0.0% and 45 deg costs 3%. That is why the
+    # bootstrap walker traded torso attitude for the `move` term and walked bent forward — nothing
+    # in the objective priced it. A small margin (e.g. upright_min 0.95 / margin 0.15) makes the
+    # gate bite at a real lean while staying smooth. Default None = the legacy flat behaviour.
     up = -data.projected_gravity_b.torch[:, 2]
-    upright = _tolerance(up, lower=upright_min, upper=float("inf"), margin=upright_min)
+    upright = _tolerance(up, lower=upright_min, upper=float("inf"),
+                         margin=upright_min if upright_margin is None else upright_margin)
     stand_gate = standing * upright
 
     # move (0..1): command-aware LINEAR speed reward (HumanoidBench-style). Reward the velocity

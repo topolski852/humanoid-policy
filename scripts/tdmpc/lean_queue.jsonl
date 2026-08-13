@@ -1,0 +1,54 @@
+# TD-MPC2 ANTI-LEAN fleet — one JSON spec per line. Run by supervisor.py with
+#   --queue scripts/tdmpc/lean_queue.jsonl --run_tag lean --grade_plant baseline --min_judge_steps 2000000
+#
+# WHY (measured 2026-08-12, not inferred):
+#   PPO demo  (deploy/walk/policy.pt) : fwd 0.300 m/s @ cmd 0.300, torso lean  -3.3 deg  (upright)
+#   bootstrap winner (walk_win_0.924) : fwd 0.363 m/s @ cmd 0.300, torso lean +27.3 deg, tilt max 98 deg
+# So the 3M-step online phase did not refine the demo — it drifted 30 deg off it and overshot the
+# command by 21%. Root cause is that NOTHING in the objective priced torso attitude: gated_locomotion's
+# upright term used _tolerance(up, lower=0.8, margin=0.8), which is FLAT to ~50 deg (a 30-deg lean cost
+# 0.0%, 45 deg cost 3.1%), while leaning forward directly buys the `move` term. Secondary cause: the
+# 400k seed is the oldest data in a 1M ring, so it was fully evicted by ~1.0M of 3M steps and the
+# BC-via-prior anchor died with it — nothing held the policy near the demo for the last 2M steps.
+#
+# TWO LEVERS, crossed:
+#   (a) PRICE THE LEAN. New `upright_margin` param on gated_locomotion (default None = legacy flat
+#       behaviour, so every earlier run is unaffected). Gate value vs lean:
+#             lean:        0     5    10    15    20    27    35 deg
+#             legacy    1.000 1.000 1.000 1.000 1.000 1.000 1.000   <- sees nothing
+#             0.97/0.10 1.000 1.000 1.000 0.996 0.809 0.238 0.005   <- "firm"
+#             0.95/0.15 1.000 1.000 1.000 1.000 0.989 0.700 0.173   <- "soft"
+#       Multiplicative, so it cannot be out-earned by any additive term. The demo sits at ~3 deg and
+#       pays nothing under either setting — the BC prior pulls WITH this change, not against it.
+#   (b) ANCHOR THE DEMO. --buffer_size 3500000 > 400k seed + 3M online, so the seed is never
+#       overwritten and the sharpened plan_std keeps the prior loss pulling toward the demo for the
+#       whole run. Caveat: "resident" not "dominant" — the demo ends as ~12% of the buffer (it was
+#       40% then 0%). Costs ~1.2 GB VRAM.
+#
+# All four arms are otherwise identical to bootstrap-B-strongbc (the better 07-24 winner): baseline
+# plant, fixed cmd_vx 0.3, 400k seed, 20k pretrain, bc_plan_std 0.15, 3M steps. DIFFERENT SEEDS (1-4)
+# — the two 07-24 "replicates" both ran seed 0 with identical net init, so the project has never had
+# a run-to-run variance estimate. Supervisor auto-adds: --variant --num_envs 32 --tdmpc2_square
+# --compile --updates_per_step 16 --max_env_steps --seed --headless.
+#
+# SUCCESS BAR (grade_run.py now enforces posture in is_win): fwd >= 0.25 m/s, falls/min <= 3,
+# ep_len >= 10 s, AND abs(torso_lean_fwd_deg) <= 15. The 07-24 winners would FAIL the new bar at
+# +27 deg. abs() because the bar is on MAGNITUDE: lean-A settled at -15 deg (leaning BACKWARD) and
+# would have passed the one-sided check this file originally described.
+# READ-OUTS: A vs 07-24 winner = does pricing lean work? B vs A = does anchoring prevent drift?
+# B vs D = multiplicative gate vs additive penalty? B vs C = is "firm" too harsh (gait barbering)?
+{"name": "lean-A-firm", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 1, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15"], "overrides": {"rewards.stand_walk.params.upright_min": 0.97, "rewards.stand_walk.params.upright_margin": 0.10}, "notes": "Price the lean, nothing else. Firm gate (0.97/0.10), demo still evicts at ~1.0M exactly as the 07-24 winners did. Isolates the reward change: if this lands near 0 deg it proves the gate alone fixes posture; if it drifts back after 1M it proves the anchor is needed."}
+{"name": "lean-B-firm-anchor", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 2, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000"], "overrides": {"rewards.stand_walk.params.upright_min": 0.97, "rewards.stand_walk.params.upright_margin": 0.10}, "notes": "The main bet: firm gate AND the demo resident for all 3M steps. Both mechanisms pull the same way (the demo is upright at -3.3 deg), so this is the arm most likely to hold the 0.300/-3 deg reference behaviour instead of drifting off it."}
+{"name": "lean-C-soft-anchor", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 3, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15}, "notes": "Safety arm against the journal's recurring failure mode — extra reward pressure barbering the gait back toward standing (runs 19/20, stability A-F). Soft gate is ~free to 20 deg and only 0.70 at 27, so it nudges rather than forces. If B collapses to standing and C walks upright-ish, the answer is gate firmness, not the idea."}
+{"name": "lean-D-flat-anchor", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 4, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000"], "overrides": {"rewards.flat_orientation_l2.weight": -0.5}, "notes": "The additive lever instead of the multiplicative one: legacy flat gate + flat_orientation_l2 -0.5 (already in HybridRewardsCfg at weight 0). Penalizes roll AND pitch, and being additive-negative it can only subtract, so it cannot be farmed — but it also competes with the move term rather than gating it. C-level tried this weight under VARIED commands and collapsed (fitness 0.0001); under a held fixed-command walk it deserves one fair shot."}
+# --- APPENDED 2026-08-12 after lean-A-firm (graded 0.9334, lean +27.3 -> -3.8 deg) ---
+# A proved the firm gate removes the MEAN lean fast (+25.7 -> -1.3 deg within 200k steps) but cannot
+# remove the residual: eval shows lean -3.8 with tilt MAGNITUDE still 19.3 deg and tilt_max ~102 deg.
+# Structural, not a tuning miss: _tolerance is exactly 1.0 inside its bound, so the gate has a FLAT
+# INTERIOR — it bounds tilt, never minimizes it, and the policy parks at the edge of the free zone.
+# (It also gates cos(tilt), which is direction-agnostic — that is why A slid from +27 to -15 deg at
+# identical reward.) flat_orientation_l2 is L2 on the gravity xy components: minimized only at zero
+# tilt, gradient everywhere, and it catches LATERAL roll which torso_lean_fwd_deg cannot even see.
+# E is the only arm with both a hard bound (gate) and a gradient toward vertical (L2). D isolates
+# the L2 term alone so E-vs-D attributes any gain to the combination rather than to the L2 term.
+{"name": "lean-E-firm-flat", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 5, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "3500000"], "overrides": {"rewards.stand_walk.params.upright_min": 0.97, "rewards.stand_walk.params.upright_margin": 0.10, "rewards.flat_orientation_l2.weight": -0.5}, "notes": "Firm gate AND flat_orientation_l2 -0.5, both with the demo anchored. Targets the residual 19-deg tilt magnitude that A could not touch: the gate bounds tilt, the L2 term pulls it to zero from anywhere, the anchor holds it near the demo's -5.5 deg. Watch for the journal's recurring barbering mode - if speed collapses while lean goes to ~0, the stack is too heavy and C/D say which half to keep."}

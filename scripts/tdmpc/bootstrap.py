@@ -56,6 +56,12 @@ parser.add_argument("--bc_plan_std", type=float, default=0.3,
                     help="plan_std stored on seed transitions -> BC strength via the TD-M(PC)^2 prior "
                          "(smaller = stronger; 2.0 = near-inert = buffer-injection only). Needs --tdmpc2_square.")
 parser.add_argument("--cmd_vx", type=float, default=0.3, help="Fixed forward command (m/s) for seed + online.")
+parser.add_argument("--buffer_size", type=int, default=None,
+                    help="Replay capacity (transitions). The DEMO-ANCHOR lever: at the 1M default the "
+                         "seed is the OLDEST data in a ring, so a 400k seed is fully evicted after ~1M "
+                         "online steps and the BC-via-prior signal dies with it. Size this above "
+                         "seed_transitions + max_env_steps and the demo stays resident (and the prior "
+                         "stays alive) for the whole run. ~0.33 kB/transition of VRAM.")
 parser.add_argument("--varied_commands", action="store_true",
                     help="Use the env's FULL velocity-command range (vx/vy/yaw + standing envs) for "
                          "seed + online instead of a fixed forward cmd_vx -> a deployable command-"
@@ -164,6 +170,8 @@ def main():
         agent_cfg.max_env_steps = args_cli.max_env_steps
     if args_cli.updates_per_step is not None:
         agent_cfg.updates_per_step = args_cli.updates_per_step
+    if args_cli.buffer_size is not None:
+        agent_cfg.buffer_size = int(args_cli.buffer_size)
     if args_cli.compile:
         agent_cfg.compile = True
     if args_cli.tdmpc2_square:
@@ -194,6 +202,17 @@ def main():
         print(f"[bootstrap] warm-started agent from {ck} (then seeding refines it)")
     buffer = SequenceReplayBuffer(agent_cfg, N, env.num_obs, env.num_priv_obs, env.num_actions, device)
     act_scale = float(agent_cfg.act_env_scale)
+    # Say up front whether the demo will survive the run, so it's in the log and not inferred later.
+    _seed_rows = max(1, args_cli.seed_transitions // N)
+    _online_rows = int(agent_cfg.max_env_steps) // N
+    if _seed_rows + _online_rows <= buffer.cap:
+        print(f"[bootstrap] demo ANCHORED: buffer holds {buffer.cap} rows >= {_seed_rows} seed + "
+              f"{_online_rows} online -> the seed is never evicted (BC prior alive for the whole run; "
+              f"it ends as ~{100*_seed_rows/(_seed_rows+_online_rows):.0f}% of the buffer).")
+    else:
+        _evict_at = (buffer.cap - _seed_rows) * N + args_cli.seed_transitions
+        print(f"[bootstrap] demo EVICTS: buffer holds {buffer.cap} rows; the seed is fully overwritten "
+              f"by ~{_evict_at/1e6:.2f}M env-steps of {agent_cfg.max_env_steps/1e6:.1f}M (BC prior dies there).")
     use_sq = bool(agent_cfg.use_tdmpc2_square)
 
     n_iters = max(1, args_cli.seed_transitions // N)
@@ -201,14 +220,20 @@ def main():
           f"= {n_iters*N} transitions (bc_plan_std={args_cli.bc_plan_std if use_sq else 'n/a (no sq)'})")
     obs_p, obs_c = env.reset()
     fwd_sum = torch.zeros((), device=env.device)
+    lean_sum = torch.zeros((), device=env.device)   # +deg = torso leaning FORWARD (see eval_smoothness)
     falls = torch.zeros((), device=env.device)
     warmup = 20
     counted = 0
     for i in range(n_iters if not args_cli.validate_only else min(n_iters, 400)):
         ppo_action = ppo(obs_p)                        # (N,12) raw, PPO deterministic mean
-        env_action = ppo_action                        # same space the TD-MPC2 env consumes
+        # CLAMP BEFORE STEPPING. The env's per-joint `clip` already bounds the joint TARGET to the
+        # same +/-act_scale, so the executed motion was already right -- but `mdp.last_action` feeds
+        # back the RAW unclipped action as 12 of the 45 obs dims. Stepping unclamped therefore wrote
+        # seed observations that TD-MPC2 (whose actions are +/-act_scale by construction) can never
+        # reproduce online. The PPO walk does exceed the bound on a small fraction of dims.
+        env_action = ppo_action.clamp(-act_scale, act_scale)
         nobs_p, nobs_c, reward, terminated, time_out, _ = env.step(env_action)
-        agent_action = (ppo_action.clamp(-act_scale, act_scale)) / act_scale   # -> [-1,1]
+        agent_action = env_action / act_scale          # -> [-1,1], exactly what the env executed
         if not args_cli.validate_only:
             if use_sq:
                 plan_mean = agent_action
@@ -219,22 +244,38 @@ def main():
                        plan_mean=plan_mean, plan_std=plan_std)
         if i >= warmup:
             fwd_sum += robot.data.root_lin_vel_b.torch[:, 0].sum()
+            lean_sum += torch.asin(robot.data.projected_gravity_b.torch[:, 0].clamp(-1, 1)).sum() * (180.0 / 3.14159265)
             falls += (terminated & ~time_out).sum()
             counted += 1
         obs_p, obs_c = nobs_p, nobs_c
         if i % 500 == 0 and i > 0:
             fs = float(fwd_sum / max(counted * N, 1))
-            print(f"[bootstrap]   seed step {i}/{n_iters}  ppo_fwd_speed={fs:.3f} m/s (cmd {args_cli.cmd_vx})")
+            ln = float(lean_sum / max(counted * N, 1))
+            print(f"[bootstrap]   seed step {i}/{n_iters}  ppo_fwd_speed={fs:.3f} m/s (cmd {args_cli.cmd_vx}) "
+                  f"ppo_lean={ln:+.1f} deg")
 
     ppo_fwd = float(fwd_sum / max(counted * N, 1))
+    ppo_lean = float(lean_sum / max(counted * N, 1))
     print(f"[bootstrap] PHASE-0 RESULT: PPO forward_speed={ppo_fwd:.3f} m/s (cmd {args_cli.cmd_vx}), "
-          f"falls={int(falls.item())} over {counted} measured steps.")
+          f"torso_lean={ppo_lean:+.1f} deg, falls={int(falls.item())} over {counted} measured steps.")
+    if ppo_lean > 12.0:
+        print(f"[bootstrap] *** NOTE: the DEMO itself leans {ppo_lean:.1f} deg forward. A tight upright "
+              f"gate will fight the BC prior -- expect the seed to be pulled toward, not away from, lean. ***")
     if ppo_fwd < 0.15:
         print(f"[bootstrap] *** WARNING: PPO is NOT walking in this env (fwd {ppo_fwd:.3f} < 0.15). "
               f"Seed data will be poor -- check plant/command/policy before trusting a long run. ***")
     if args_cli.validate_only:
         print("[bootstrap] --validate_only: done."); env.close(); return
-    print(f"[bootstrap] buffer seeded: {len(buffer)} transitions ({buffer.size} rows x {N}).")
+
+    # Mark the LAST seeded transition as a truncation. TdmpcTrainer.train() calls env.reset() before
+    # online collection, so the row written after this one holds a post-reset obs -- without a
+    # boundary flag the buffer would hand out windows whose next-obs jumps across that reset. The
+    # existing time_out rule then drops exactly those windows.
+    last_row = (buffer.head - 1) % buffer.cap
+    buffer.time_out[last_row] = True
+    buffer.done[last_row] = True
+    print(f"[bootstrap] buffer seeded: {len(buffer)} transitions ({buffer.size} rows x {N}); "
+          f"row {last_row} flagged time_out (seed->online seam).")
 
     # ---------------- Phase 2+3: pretrain burst (on the seed) + online refine, via TdmpcTrainer -------
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
