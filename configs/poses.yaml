@@ -1,4 +1,47 @@
 poses:
+  g1_squat:
+    base_pos:
+    - 0.0
+    - 0.0
+    - 0.3
+    base_quat:
+    - 1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    joint_pos:
+      left_ankle_pitch_joint: -0.8626699999999999
+      left_ankle_roll_joint: 0.01064650843716541
+      left_elbow_joint: 0.6956882398449398
+      left_hip_pitch_joint: -2.5207
+      left_hip_roll_joint: 0.10227629416686772
+      left_hip_yaw_joint: -0.006806784082777886
+      left_knee_joint: 2.8698
+      left_shoulder_pitch_joint: -0.2192133540504878
+      left_shoulder_roll_joint: 0.48171087355043496
+      left_shoulder_yaw_joint: -0.9976302004399588
+      left_wrist_pitch_joint: -1.589122283940837
+      left_wrist_roll_joint: -0.7138396640656808
+      left_wrist_yaw_joint: 0.3649483465920143
+      right_ankle_pitch_joint: -0.8626699999999999
+      right_ankle_roll_joint: -0.013439035240356337
+      right_elbow_joint: 0.7412413333219917
+      right_hip_pitch_joint: -2.5207
+      right_hip_roll_joint: -0.05794493116621174
+      right_hip_yaw_joint: -0.00471238898038469
+      right_knee_joint: 2.8698
+      right_shoulder_pitch_joint: -0.3129375348825833
+      right_shoulder_roll_joint: -0.5216789134211051
+      right_shoulder_yaw_joint: 1.0053096491487339
+      right_wrist_pitch_joint: -1.31737451940532
+      right_wrist_roll_joint: -0.3937462792499207
+      right_wrist_yaw_joint: -1.457349925415265
+      waist_pitch_joint: 0.49864056729477996
+      waist_roll_joint: -0.034557519189487726
+      waist_yaw_joint: 0.02076941809873252
+    note: 'imported from teleop/safety/poses/safety_squat.yaml (captured on the robot);
+      clamped into URDF limits with 0.01 rad margin; needs_floor_snap: true -- run
+      pose_editor.py to place and snap the base before training'
   squat:
     base_pos:
     - -0.01801764965057373

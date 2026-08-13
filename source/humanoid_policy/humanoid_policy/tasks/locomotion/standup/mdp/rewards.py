@@ -82,6 +82,30 @@ def track_joint_pose_exp(
     return torch.mean(torch.exp(-(e * e) / (std * std)), dim=1)
 
 
+def scheduled_contact(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    release_height: float,
+    threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize contacts on ``sensor_cfg`` bodies **only once the base is above** ``release_height``.
+
+    The deep squat rests on feet *and* shins; the shins lift off as the robot rises. A flat
+    ``undesired_contacts`` term on the shins would therefore punish the pose the robot is supposed
+    to start (and end) in, and a term that ignores them entirely lets the policy drag its shins on
+    the way up. This gates the penalty on base height: free at the bottom, charged once standing.
+
+    Returns the count of penalized bodies in contact (0 below ``release_height``).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history.torch[:, :, sensor_cfg.body_ids, :]
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > threshold  # [envs, n_bodies]
+    asset = env.scene[asset_cfg.name]
+    above = (asset.data.root_pos_w[:, 2] > release_height).unsqueeze(1)
+    return torch.sum((in_contact & above).float(), dim=1)
+
+
 def base_height_exp(
     env: "ManagerBasedRLEnv",
     target_height: float,

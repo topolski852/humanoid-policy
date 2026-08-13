@@ -14,6 +14,8 @@ VARIANTS = {
     "standup-biped": "Standup-Humanoid-Policy-Biped-v0",
     "standup-humanoid": "Standup-Humanoid-Policy-v0",
     "squat-biped": "Squat-Humanoid-Policy-Biped-v0",
+    "standup-g1": "Standup-Humanoid-Policy-G1-v0",  # Unitree G1: squat -> stand
+    "squat-g1": "Squat-Humanoid-Policy-G1-v0",      # Unitree G1: stand -> squat (safe stop)
 }
 
 
