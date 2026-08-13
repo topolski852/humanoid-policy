@@ -474,3 +474,46 @@ falsifiable test: lean should hold near -5 past 1M instead of sliding to -15.
 is minimized only at zero tilt (gradient everywhere, and it sees LATERAL roll), so it attacks exactly
 the residual the gate structurally cannot. D isolates the L2 term alone, so E-vs-D attributes any
 gain to the combination. Fleet resumed at idx 1 (B, C, D, E), state next_index=1, runs=1, wins=1.
+
+## ANTI-LEAN fleet RESULT (2026-08-13): lean fixed on 3 seeds; the SOFT gate wins
+Stopped after 3 graded arms (D killed at 0.82M, E never launched) — the primary question was
+answered and the GPU was wanted for visual inspection. Deterministic eval, same protocol throughout:
+
+| arm | fwd m/s | lean deg | tilt deg | rocking | accel | fitness |
+|---|---|---|---|---|---|---|
+| 07-24 winner (baseline) | 0.363 | **+27.3** | 29.2 | 1.449 | 2.887 | 0.9236 |
+| A firm 0.97/0.10, evict, seed 1 | 0.332 | -3.8 | 19.3 | 1.230 | 2.429 | 0.9334 |
+| B firm 0.97/0.10, anchor, seed 2 | 0.356 | +4.3 | 18.7 | 1.290 | 2.960 | 0.9221 |
+| **C soft 0.95/0.15, anchor, seed 3** | 0.306 | -4.7 | **14.0** | **0.875** | 2.500 | 0.9318 |
+
+**Pricing torso attitude works, and it replicates.** Three seeds, three reward configs, all land
+within +-5 deg from a +27.3 baseline. This is the first result in the project with a genuine
+multi-seed confirmation.
+
+**The SOFT gate beat the firm one — the opposite of the prediction.** C has the lowest tilt (14.0 vs
+18.7-19.3), the lowest rocking (0.875, -40% vs the old winner) and near-exact command tracking
+(0.306 achieved vs 0.300 commanded = 1.02x, where the old winner ran 1.21x). The firm gate's sharp
+cliff at 0.97/0.10 appears to make the policy fight the boundary; the gentler basin lets it settle.
+Follow-ups should explore SOFTER, not firmer. C is preserved as
+`_preserved/walk_posture_0.932_lean-C-soft-anchor_2026-08-13.pt`.
+
+**Three corrections to earlier claims in this journal:**
+1. **The anchor is NOT established.** The prediction was "B holds near -5 past 1M while A drifts".
+   Collection lean: A (evict) +15.8 -> -19.4 -> -17.6 (drifts away); B (anchor) +19.3 -> +7.0 ->
+   +2.5 (converges); but **C also has the anchor and still drifted to -10.8**. One seed per config
+   means anchor and seed are confounded. No attribution is possible from this fleet.
+2. **Collection lean systematically overstates the problem** (exploration noise wrecks posture):
+   A -17.6 collect -> -3.8 eval; C -10.8 -> -4.7; B +2.5 -> +4.3. Judge posture on the GRADE.
+   The live `OVER BAR` flags in fleet_status are mostly this artifact.
+3. **`torso_tilt_deg_max` is not a discriminator** — ~101 deg for all three arms and 98 for the old
+   winner. No lever moved it; at 64k samples/eval it is almost certainly reset/DR transients.
+
+**Arm E's premise was undermined before it ran.** E (firm gate + flat_orientation_l2) was appended to
+attack the residual ~19 deg tilt using a gradient-everywhere term — but C reached 14 deg with a
+SOFTER gate and no flat term at all. The tilt reduction came from gate softness, not from adding a
+penalty. D (flat_orientation alone) was stopped at 0.82M; both remain queued at next_index 3.
+
+**Machinery note:** `preserve_if_better` uses fitness, which the code review showed is
+~`0.8 + 0.2*smooth` for any non-faller and therefore cannot rank posture — it skipped C (0.9318 <
+A's 0.9334) even though C is the better gait on every quality axis. Preserved manually. Worth
+changing the preserve rule to consider posture, or preserving every `is_win` run.
