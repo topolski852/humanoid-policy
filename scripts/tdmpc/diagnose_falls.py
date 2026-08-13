@@ -49,6 +49,14 @@ parser.add_argument("--severe_deg", type=float, default=80.0)
 parser.add_argument("--recover_deg", type=float, default=25.0)
 parser.add_argument("--out", type=str, default=None)
 parser.add_argument("--label", type=str, default=None)
+parser.add_argument("--horizon", type=int, default=None,
+                    help="override the MPPI planning horizon at INFERENCE. The world model is a "
+                         "one-step dynamics model and none of the loaded weights depend on horizon, "
+                         "so this probes D5 (is the model's rollout usable past 0.12 s?) on an "
+                         "existing checkpoint without retraining.")
+parser.add_argument("--warm_start", action="store_true",
+                    help="enable the MPPI warm start (agent.plan_batch). Inference-time only, so this "
+                         "A/Bs on an EXISTING checkpoint with no retraining.")
 variants.add_variant_arg(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -86,6 +94,9 @@ def main():
 
     agent_cfg = load_cfg_from_registry(args_cli.task, "tdmpc_cfg_entry_point")
     agent_cfg.num_envs = args_cli.num_envs
+    agent_cfg.mppi_warm_start = bool(args_cli.warm_start)
+    if args_cli.horizon is not None:
+        agent_cfg.horizon = int(args_cli.horizon)   # inference-only; weights are horizon-independent
     device = args_cli.device or env_cfg.sim.device
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
@@ -100,7 +111,7 @@ def main():
         jit = torch.jit.load(p, map_location=dev).eval()
         label = args_cli.label or f"PPO {os.path.basename(p)}"
 
-        def act(obs):
+        def act(obs, reset=None):
             return jit(obs).clamp(-act_scale, act_scale)
     else:
         ck = args_cli.checkpoint
@@ -110,11 +121,12 @@ def main():
         agent.load(ck)
         label = args_cli.label or os.path.basename(ck)
 
-        def act(obs):
-            a, _, _ = agent.plan_batch(obs, eval_mode=True) if args_cli.plan \
+        def act(obs, reset=None):
+            a, _, _ = agent.plan_batch(obs, eval_mode=True, reset=reset) if args_cli.plan \
                 else (agent.act_pi(obs, eval_mode=True), None, None)
             return a * act_scale
 
+    print(f"[falls] H={agent_cfg.horizon} warm_start={bool(args_cli.warm_start)}")
     print(f"[falls] {label} | plant={args_cli.plant} | "
           f"{'mppi' if args_cli.plan else ('ppo' if args_cli.ppo_policy else 'prior')} | "
           f"fall>{args_cli.fall_deg:.0f}deg severe>{args_cli.severe_deg:.0f}deg")
@@ -135,9 +147,11 @@ def main():
     n = 0
 
     obs_p, _ = env.reset()
+    prev_done = None
     with torch.no_grad():
         for i in range(args_cli.warmup + args_cli.steps):
-            obs_p, _, _, term, tout, _ = env.step(act(obs_p))
+            obs_p, _, _, term, tout, _ = env.step(act(obs_p, reset=prev_done))
+            prev_done = term | tout
             gb = robot.data.projected_gravity_b.torch
             tilt = torch.acos((-gb[:, 2]).clamp(-1, 1)) * RAD2DEG
             if i >= args_cli.warmup:

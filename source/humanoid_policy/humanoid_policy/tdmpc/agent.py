@@ -1,8 +1,9 @@
 """TD-MPC2 agent — adapted from the official MIT repo for our vectorized Isaac Lab setting.
 
 Key adaptations vs upstream tdmpc2/tdmpc2.py:
-  - device-agnostic (no cuda:0 hardcode), eager only (no torch.compile / cudagraphs), single-task,
-    non-episodic, non-multitask.
+  - device-agnostic (no cuda:0 hardcode), single-task, non-episodic, non-multitask.
+    `_update` IS torch.compile'd when cfg.compile (see below) -- an earlier version of this note
+    said "eager only", which stopped being true on 07-20.
   - `act_pi(obs_batch)` — BATCHED policy-prior action over N envs, used for data collection (planning
     is not needed to collect and vectorizes trivially through the prior).
   - `_update(batch)` — takes the dict from our SequenceReplayBuffer.sample (not torchrl).
@@ -46,9 +47,21 @@ class TDMPC2(torch.nn.Module):
         self.iterations = cfg.mppi_iterations + 2 * int(action_dim >= 20)
         self._prev_mean = torch.zeros(cfg.horizon, action_dim, device=self.device)
 
-        # Optional torch.compile of the (dominant) update step. cudagraphs needs no CPU<->GPU sync
-        # inside the region — the scale-threshold sync was removed for exactly this. ~3.6x faster
-        # updates on this GPU; falls back to eager automatically if compile errors at first call.
+        # Optional torch.compile of the (dominant) update step.
+        #
+        # MEASURED 2026-08-13 on torch 2.11 / RTX 5080 (scripts/tdmpc/check_compile_{adam,engaged}.py):
+        #   * compile engages (23 dynamo frames) and is numerically IDENTICAL to eager -- losses and
+        #     parameter norms match to 4 decimals over 40 updates.
+        #   * speedup is 1.81x, NOT the ~3.6x an earlier version of this comment claimed.
+        #   * 10 graph breaks remain, at `total_loss.backward()` / `pi_loss.backward()` (autograd ops
+        #     are not traced by default) and at `optim.zero_grad` / a graph_break() torch itself puts
+        #     in the optimizer wrapper. So despite mode="reduce-overhead", the optimizer step is NOT
+        #     inside a captured cudagraph.
+        #   * That last point is why we do NOT need the reference's `capturable=True`
+        #     (official tdmpc2.py:29,31): Adam's CPU-side `step` counter is never frozen by capture,
+        #     and it was verified to advance correctly (40 after 40 updates). Audited because a frozen
+        #     counter would silently pin the bias correction -- it does not happen here.
+        # Falls back to eager automatically if compile errors at first call.
         if bool(getattr(cfg, "compile", False)):
             self._update = torch.compile(self._update, mode="reduce-overhead")
 
@@ -116,11 +129,20 @@ class TDMPC2(torch.nn.Module):
         return a.clamp(-1, 1)
 
     @torch.no_grad()
-    def plan_batch(self, obs, eval_mode=True):
+    def plan_batch(self, obs, eval_mode=True, reset=None):
         """Vectorized MPPI over N envs at once. obs (N, obs_dim) -> action (N, action_dim) in [-1,1].
 
         Same MPPI as `plan` but with an explicit env batch dim N (flattened into the sample batch for
         the model forward passes), so it runs the planner for all collection/eval envs in parallel.
+
+        WARM START (cfg.mppi_warm_start, upstream tdmpc2.py:168 `if not t0: mean[:-1] = _prev_mean[1:]`):
+        seed this solve with the previous step's solution shifted one step forward. Without it every
+        control step re-solves from mean=0 / std=max_std and spends its 6 iterations rediscovering a
+        plan it already had. This batched path originally omitted it (the single-obs `plan` below has
+        always had it), so every collection AND eval step in the project so far planned cold.
+
+        `reset` is an optional (N,) bool mask of envs that just began an episode; their carried mean is
+        zeroed, matching upstream's `t0`.
         """
         cfg, dev = self.cfg, self.device
         N = obs.shape[0]
@@ -138,6 +160,13 @@ class TDMPC2(torch.nn.Module):
 
         z = z0.unsqueeze(1).expand(N, S, lat).reshape(N * S, lat)  # (N*S, lat)
         mean = torch.zeros(H, N, A, device=dev)
+        if bool(getattr(cfg, "mppi_warm_start", False)):
+            if getattr(self, "_prev_mean_b", None) is None or self._prev_mean_b.shape != (H, N, A):
+                self._prev_mean_b = torch.zeros(H, N, A, device=dev)   # first call / N changed
+            else:
+                mean[:-1] = self._prev_mean_b[1:]                      # shift one step forward
+                if reset is not None:
+                    mean[:, reset] = 0.0                               # t0 envs plan cold
         std = torch.full((H, N, A), cfg.max_std, device=dev)
         actions = torch.empty(H, N, S, A, device=dev)
         actions[:, :, :Np] = pi_actions
@@ -157,6 +186,8 @@ class TDMPC2(torch.nn.Module):
             std = ((sc * (elite_actions - mean.unsqueeze(2)) ** 2).sum(2) / (sc.sum(2) + 1e-9)).sqrt()
             std = std.clamp(cfg.min_std, cfg.max_std)
 
+        if bool(getattr(cfg, "mppi_warm_start", False)):
+            self._prev_mean_b = mean
         mu0, std0 = mean[0], std[0]           # planner action distribution at t=0 (for TD-M(PC)²)
         a0 = mu0
         if not eval_mode:

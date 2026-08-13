@@ -65,6 +65,11 @@ class TdmpcAgentCfg:
     temperature: float = 0.5
     min_std: float = 0.05
     max_std: float = 2.0
+    # Seed each MPPI solve with the previous step's shifted solution (official tdmpc2.py:168).
+    # Our batched planner omitted this from day one, so every collection and eval step in the
+    # project planned from mean=0 / std=max_std with only 6 iterations to recover. OFF by default
+    # so existing checkpoints re-grade identically; turn on per-run to A/B it.
+    mppi_warm_start: bool = False
 
     # --- optimization ----------------------------------------------------------
     batch_size: int = 256
