@@ -40,6 +40,13 @@ ACCEL_RMS_SCALE = 6.0      # exp(-base_accel_rms / ACCEL_RMS_SCALE): smoothness 
 WIN_FWD_SPEED = 0.25       # m/s, body-frame forward
 WIN_FALL_RATE = 3.0        # per minute, max
 WIN_EP_LEN_S = 10.0        # s, min mean episode length
+WIN_FALL_PCT_EP = 10.0     # %, max share of EPISODES containing a real (tilt>45 deg) fall. The old
+                           # `fall_rate_per_min` counts only hard_collapse (base 0.30 m below
+                           # standing), which the TD-MPC2 walk env almost never trips: measured
+                           # 2026-08-13, the 07-24 "0 falls, is_win=True" winner actually falls in
+                           # 30.2% of episodes and spends 24.8% of its time past 45 deg. The PPO demo
+                           # it was seeded from manages 6.2%. Runs evaluated before the metric
+                           # existed have no `pct_episodes_with_fall` and are not judged on it.
 WIN_LEAN_DEG = 15.0        # deg, max mean torso lean MAGNITUDE (see abs() below). The 07-24 winners
                            # cleared every other bar while walking bent well forward: the gated
                            # reward's upright term is flat to ~50 deg (upright_min .8 / margin .8),
@@ -83,8 +90,11 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
     # BACKWARD) and would have passed a one-sided `lean <= 15` check. The upright gate constrains
     # cos(tilt), which is direction-agnostic, so the policy is free to trade forward lean for
     # backward lean at identical reward -- and it did, within 200k steps.
+    fall_pct = metrics.get("pct_episodes_with_fall")
+    fall_pct = float(fall_pct) if fall_pct is not None else None
     is_win = (fwd >= WIN_FWD_SPEED and fall_rate <= WIN_FALL_RATE and ep_len_s >= WIN_EP_LEN_S
-              and (lean is None or abs(lean) <= WIN_LEAN_DEG))
+              and (lean is None or abs(lean) <= WIN_LEAN_DEG)
+              and (fall_pct is None or fall_pct <= WIN_FALL_PCT_EP))
     comp.update({
         "fitness": round(fitness, 4),
         "quality": round(quality, 4),
@@ -96,6 +106,9 @@ def score(metrics: dict, cmd_vx: float) -> tuple[float, dict]:
             "fall_rate_per_min": round(fall_rate, 4) if fall_rate < 1e6 else "inf",
             "mean_episode_len_s": round(ep_len_s, 2),
             "base_accel_rms": round(accel_rms, 4) if accel_rms < 1e6 else "inf",
+            "pct_episodes_with_fall": fall_pct,
+            "real_falls_per_min": (round(float(metrics["real_falls_per_min"]), 3)
+                                   if "real_falls_per_min" in metrics else None),
             "torso_lean_fwd_deg": round(lean, 2) if lean is not None else None,
             "torso_tilt_deg": round(float(metrics["torso_tilt_deg"]), 2) if "torso_tilt_deg" in metrics else None,
             "cmd_vx": cmd_vx,

@@ -120,6 +120,19 @@ def main():
     lean_sum = torch.zeros((), device=dev)
     tilt_sum = torch.zeros((), device=dev)
     tilt_max = torch.zeros((), device=dev)
+    # REAL falls. `falls` below counts termination_manager dones, which in the TD-MPC2 walk env is
+    # the single hard_collapse term (base 0.30 m below standing) -- that env deliberately dropped the
+    # PPO env's 45-degree tilt termination, so a policy can topple and scrape along without ever
+    # tripping it. Measured 2026-08-13: the 07-24 winner spends 24.8% of its time past 45 deg and
+    # falls in 30% of episodes while `falls` reads 0.0. Count a fall the way a human watching counts
+    # one: a rising-edge crossing of FALL_DEG. See scripts/tdmpc/diagnose_falls.py.
+    FALL_DEG, RECOVER_DEG = 45.0, 25.0
+    was_down = torch.zeros(N, dtype=torch.bool, device=dev)
+    ep_fell = torch.zeros(N, dtype=torch.bool, device=dev)
+    real_falls = torch.zeros((), device=dev)
+    steps_down = torch.zeros((), device=dev)
+    episodes = torch.zeros((), device=dev)
+    episodes_with_fall = torch.zeros((), device=dev)
     prev_action = None
 
     obs_p, obs_c = env.reset()
@@ -157,7 +170,18 @@ def main():
                 lean_sum += lean.sum()
                 tilt_sum += tilt.sum()
                 tilt_max = torch.maximum(tilt_max, tilt.max())
+                down = tilt > FALL_DEG
+                real_falls += (down & ~was_down).sum()          # rising edge = one fall event
+                was_down = torch.where(tilt < RECOVER_DEG, torch.zeros_like(down), down | was_down)
+                ep_fell |= down
+                steps_down += down.sum()
                 tm = uenv.termination_manager
+                _done = tm.dones
+                if _done.any():
+                    episodes += _done.sum()
+                    episodes_with_fall += (ep_fell & _done).sum()
+                    ep_fell = torch.where(_done, torch.zeros_like(ep_fell), ep_fell)
+                    was_down = torch.where(_done, torch.zeros_like(was_down), was_down)
                 falls += (tm.dones & ~tm.time_outs).sum()
                 timeouts += tm.time_outs.sum()
                 n_steps += 1
@@ -197,6 +221,14 @@ def main():
         "torso_lean_fwd_deg": float(lean_sum.item() / denom),  # +ve = leaning FORWARD (want ~0-8)
         "torso_tilt_deg": float(tilt_sum.item() / denom),      # total tilt magnitude (want < ~12)
         "torso_tilt_deg_max": float(tilt_max.item()),          # worst single env-step
+        # --- REAL falls (tilt-based). `falls`/`fall_rate_per_min` above are the LEGACY
+        # hard_collapse-only numbers and read ~0 for gaits that visibly fall; keep both so the
+        # gap is explicit and old runs stay comparable. Grade on these.
+        "real_fall_events": float(real_falls.item()),
+        "real_falls_per_min": float(real_falls.item() / env_seconds * 60.0),
+        "pct_episodes_with_fall": (round(100.0 * episodes_with_fall.item() / float(episodes.item()), 1)
+                                   if float(episodes.item()) > 0 else None),
+        "pct_time_past_fall_angle": round(100.0 * steps_down.item() / denom, 2),
     }
     print("[eval-smooth] RESULT " + json.dumps(metrics))
     if args_cli.out:
