@@ -345,7 +345,14 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
                 _terminate(proc)
                 return run_dir, f"HUNG no TB progress {cfg.stale_secs}s (stuck @ {cur_step})", "crash"
 
-            action, reason = evaluate_run(sc, cfg.min_judge_steps, expects_locomotion)
+            # Judge no earlier than HALF the run's own budget. Measured 2026-08-13: every
+            # long-budget run in this project was killed at ~2.0-2.2M by these rules firing the
+            # instant min_judge_steps allowed it -- stab-AL-deliverable-20M died at 2.14M, 10.7%
+            # of its 20M budget, because its speed read 0.148 against a hard 0.150 floor. No run
+            # has ever exceeded 4.42M transitions, so this project has never observed what happens
+            # past ~22% of the reference's optimization budget.
+            eff_min_judge = max(cfg.min_judge_steps, int(0.5 * max_steps))
+            action, reason = evaluate_run(sc, eff_min_judge, expects_locomotion)
             if action == "stop":
                 _log(f"  decision: STOP — {reason}")
                 _terminate(proc)
