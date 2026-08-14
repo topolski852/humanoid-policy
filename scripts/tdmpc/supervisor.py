@@ -352,6 +352,11 @@ def launch_and_monitor(spec: dict, cfg, best_ckpt: str | None,
             # has ever exceeded 4.42M transitions, so this project has never observed what happens
             # past ~22% of the reference's optimization budget.
             eff_min_judge = max(cfg.min_judge_steps, int(0.5 * max_steps))
+            if getattr(cfg, "no_early_stop", False):
+                # Deliberate long run: only DIVERGENCE (pi_loss blow-up) may cut it. The plateau
+                # rules key on mean_episode_return and a raw speed floor, both of which the
+                # 2026-08-13 fall audit showed are poor signals -- not something to hand a 24 h run.
+                eff_min_judge = 10**12
             action, reason = evaluate_run(sc, eff_min_judge, expects_locomotion)
             if action == "stop":
                 _log(f"  decision: STOP — {reason}")
@@ -496,6 +501,10 @@ def main():
     p.add_argument("--eval_envs", type=int, default=64)
     p.add_argument("--eval_steps", type=int, default=1000)
     p.add_argument("--grade_timeout", type=int, default=1800)
+    p.add_argument("--no_early_stop", action="store_true",
+                   help="disable the plateau/regression/converged stoppers (DIVERGENCE still fires). "
+                        "For a deliberate long run: every 10M/20M-budget run in this project's "
+                        "history was killed at ~2.1M by those rules.")
     p.add_argument("--grade_horizon", type=int, default=None,
                    help="MPPI horizon for grading. Set it to the fleet's TRAINING horizon; otherwise "
                         "an H=6 arm gets judged with an H=3 planner.")

@@ -44,6 +44,17 @@ class TdmpcTrainer:
         # signal, so a run could look healthy on speed/return while bending further and further
         # forward. Logged next to ground_speed so the trade is visible live, not at grading time.
         self._lean_sum = None
+        # --- IN-TRAINING FALL TELEMETRY -------------------------------------------------------
+        # The fall audit (2026-08-13) showed `falls` from the termination manager is blind in this
+        # env: it counts only hard_collapse (base 0.30 m below standing), which reads 0.00 even for
+        # a policy that falls in 30% of episodes. Nothing in TensorBoard has ever shown falling, so
+        # a long run's most important trend line did not exist. Count falls here the same way the
+        # eval does -- a rising-edge crossing of 45 deg of torso tilt -- so `collect/falls_per_min`
+        # can be watched live. Purely observational: no effect on the data collected or the update.
+        self._FALL_DEG, self._RECOVER_DEG = 45.0, 25.0
+        self._was_down = torch.zeros(self.N, dtype=torch.bool, device=env.device)
+        self._fall_events = torch.zeros((), device=env.device)
+        self._down_steps = torch.zeros((), device=env.device)
         # stance-width telemetry: horizontal distance between the two feet (ankle_roll bodies).
         try:
             names = list(self._robot.body_names)
@@ -130,8 +141,16 @@ class TdmpcTrainer:
                 spd = self._robot.data.root_lin_vel_w.torch[:, :2].norm(dim=1).mean()
                 self._spd_sum = spd if self._spd_sum is None else self._spd_sum + spd
                 self._spd_n += 1
-                lean = torch.asin(self._robot.data.projected_gravity_b.torch[:, 0].clamp(-1, 1)).mean() * 57.29578
+                _gb = self._robot.data.projected_gravity_b.torch
+                lean = torch.asin(_gb[:, 0].clamp(-1, 1)).mean() * 57.29578
                 self._lean_sum = lean if self._lean_sum is None else self._lean_sum + lean
+                # fall state machine (see __init__): rising edge past FALL_DEG = one fall event
+                _tilt = torch.acos((-_gb[:, 2]).clamp(-1, 1)) * 57.29578
+                _down = _tilt > self._FALL_DEG
+                self._fall_events += (_down & ~self._was_down).sum()
+                self._down_steps += _down.sum()
+                self._was_down = torch.where(_tilt < self._RECOVER_DEG,
+                                             torch.zeros_like(_down), _down | self._was_down)
                 # curriculum tracking (on-GPU masked sums; synced only at the ramp check): speed
                 # PROJECTED onto the command direction, over the envs actually commanded to move.
                 if self.cmd_curriculum:
@@ -160,6 +179,7 @@ class TdmpcTrainer:
                     self.len_hist.append(l)
                 ep_return = torch.where(done, torch.zeros_like(ep_return), ep_return)
                 ep_len = torch.where(done, torch.zeros_like(ep_len), ep_len)
+                self._was_down = torch.where(done, torch.zeros_like(self._was_down), self._was_down)
 
             # --- command curriculum: widen the command only once the robot actually TRACKS the
             # current commanded speed (achieved-along-cmd >= cmd_track_frac * commanded). Survival
@@ -223,6 +243,12 @@ class TdmpcTrainer:
                 mean_len = (sum(self.len_hist) / len(self.len_hist)) if self.len_hist else 0.0
                 mean_spd = float((self._spd_sum / self._spd_n)) if self._spd_n > 0 else 0.0
                 mean_lean = float((self._lean_sum / self._spd_n)) if self._spd_n > 0 else 0.0
+                # falls over THIS interval, per env-minute of robot time
+                _env_sec = max(self._spd_n, 1) * self.N * float(self.env.step_dt)
+                falls_min = float(self._fall_events) / _env_sec * 60.0
+                pct_down = 100.0 * float(self._down_steps) / max(self._spd_n * self.N, 1)
+                self._fall_events = torch.zeros_like(self._fall_events)
+                self._down_steps = torch.zeros_like(self._down_steps)
                 self._spd_sum = None
                 self._lean_sum = None
                 self._spd_n = 0
@@ -231,13 +257,15 @@ class TdmpcTrainer:
                 self._sw_n = 0
                 self.writer.add_scalar("collect/ground_speed_mps", mean_spd, total)
                 self.writer.add_scalar("collect/torso_lean_deg", mean_lean, total)  # +ve = leaning forward
+                self.writer.add_scalar("collect/falls_per_min", falls_min, total)      # REAL falls (tilt>45)
+                self.writer.add_scalar("collect/pct_time_past_45deg", pct_down, total)
                 self.writer.add_scalar("collect/mean_episode_len", mean_len, total)  # key signal (episodic stand)
                 self.writer.add_scalar("collect/stance_width_m", mean_sw, total)     # foot separation (target 0.25)
                 if self.cmd_curriculum:
                     self.writer.add_scalar("curriculum/cmd_scale", self.cmd_scale, total)
                 print(f"[tdmpc] steps={total} sps={sps:.0f} buf={len(buf)} "
                       f"ep_return={mean_ret:.2f} ep_len={mean_len:.0f} speed={mean_spd:.3f} "
-                      f"lean={mean_lean:+.1f}deg stance={mean_sw:.3f} {cmd_tag}"
+                      f"lean={mean_lean:+.1f}deg falls/min={falls_min:.2f} stance={mean_sw:.3f} {cmd_tag}"
                       + " ".join(f"{k}={float(v):.3f}" for k, v in last_info.items() if 'loss' in k))
                 # best-checkpoint on smoothed return
                 if self.ret_hist and mean_ret > self.best_return:
