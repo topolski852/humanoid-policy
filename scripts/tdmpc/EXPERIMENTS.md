@@ -565,3 +565,51 @@ a deployment consideration at 25 Hz, and a ~1.5-2x slowdown for online collectio
 (4) Untested: training AT H=6, where the consistency loss would fit 6-step rollouts and the value
 function would match the horizon actually used. Expected to beat plan-at-6-with-an-H3-model, but
 that is a hypothesis, not a measurement.
+
+## H=6 FLEET RESULT (2026-08-15) — nothing plateaued; flat_orientation wins; UTD 1.0 does not
+All four arms ran to budget (no early stops). Graded at H=6 + warm start, objective walk_v2.
+
+| arm | fitness | falls %eps | tilt | lean | fwd (x cmd) | note |
+|---|---|---|---|---|---|---|
+| **h6-flat** | **0.0936** | **12.5%** | **6.5** | -3.6 | 0.370 (1.23x) | + flat_orientation_l2 -0.5 |
+| h6-base-rep | 0.0620 | 14.8% | 9.5 | +1.6 | 0.376 (1.25x) | seed 12 |
+| h6-base | 0.0612 | 17.2% | 8.8 | -5.9 | 0.355 (1.18x) | seed 11 |
+| h6-utd1 | 0.0523 | 16.4% | 9.3 | -2.0 | 0.380 (1.27x) | UTD 1.0 |
+| lean-C (H3-trained) | 0.0807 | 18.8% | 9.1 | -3.9 | 0.312 (1.04x) | prior best |
+| PPO reference | 0.2571 | 6.2% | 9.7 | -3.3 | 0.281 (0.94x) | the target |
+
+**NOTHING PLATEAUED — the operator's read was right.** Speed slope over 2-3M was +0.030..+0.069
+m/s per 1M in every arm, and the new in-training fall telemetry declined monotonically to the
+budget wall without flattening:
+```
+falls/min      0.0M  0.5M  1.0M  1.5M  2.0M  2.5M   slope 2-3M
+h6-flat        2.51  2.31  2.15  2.03  1.89  1.55     -0.612   <- ACCELERATING downward
+h6-base-rep    2.34  2.06  2.02  1.90  1.79  1.71     -0.172
+h6-utd1        2.40  2.25  2.17  1.89  1.77  1.70     -0.227
+```
+Falling is still being actively trained out at the point every run in this project has been stopped.
+
+**flat_orientation_l2 -0.5 is the reward win.** Against its matched-config seed (h6-base-rep):
+falls 14.8 -> 12.5%, tilt 9.5 -> 6.5 deg -- better torso attitude than the PPO reference (9.7) --
+and by far the steepest fall-decline slope. This is the audit's prediction confirmed: the upright
+gate has a FLAT INTERIOR and can only bound tilt, while an L2 term on gravity-xy has a gradient
+everywhere and also sees lateral roll.
+
+**Training at H=6 helps falls** (18.8% -> 12.5-17.2% vs the H=3-trained lean-C), so H=6 earns its
+~1.4x collection cost. **UTD 1.0 does NOT help**: h6-utd1 was the worst arm (0.0523). Staying at
+UTD 0.5 saves ~40% of wall clock at no measured cost. **Replication is tight** (base 0.0612 vs
+rep 0.0620; falls 17.2 vs 14.8%, inside the ~3.5 pp binomial SE), so h6-flat's margin is real.
+
+**New deficit, and it is the planner's not the reward's:** every H=6 arm overshoots the command
+(1.18-1.27x vs lean-C's 1.04x). Nothing in the reward pays for exceeding it -- `move_go` clamps at
+1.0 -- so this is the longer-horizon planner exploiting model error. It drags v2 fitness below
+lean-C's despite better safety, and collection speed was still climbing +0.069/1M at the wall.
+
+## LONG RUN LAUNCHED (2026-08-15) — `long_queue.jsonl`, 20M, stoppers off
+First run in this project's history to be allowed past ~4.4M. h6-flat's measured config +
+`track_lin_vel_xy 0.5` (the one untested element, to price the overshoot; PPO uses 1.787), H=6,
+UTD 0.5, buffer 10M (3.3 GB; demo resident for the first ~10M), `--no_early_stop` so only a
+pi_loss divergence can cut it. ~46 h at 121 steps/s; checkpoints every 50k so stopping early from
+TensorBoard costs nothing. Watch `collect/falls_per_min` and `collect/ground_speed_mps` vs the
+0.300 command. If falls drop while speed collapses toward 0.15, the tracking term is too strong --
+stop, drop to 0.25, resume.

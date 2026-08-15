@@ -1,0 +1,46 @@
+# THE LONG RUN — 20M transitions, the first time this project has ever trained past ~4.4M.
+#   supervisor.py --queue scripts/tdmpc/long_queue.jsonl --run_tag long --grade_plant baseline
+#     --grade_horizon 6 --grade_warm_start --no_early_stop --max_env_steps 20000000
+#
+# WHY NOW. The H=6 fleet (2026-08-15) ended with NOTHING plateaued. Speed slope over 2-3M was
+# +0.030..+0.069 m/s per 1M in all four arms, and the new in-training fall telemetry fell
+# monotonically to the budget wall without flattening:
+#     falls/min   0.0M  0.5M  1.0M  1.5M  2.0M  2.5M   slope 2-3M
+#     h6-flat     2.51  2.31  2.15  2.03  1.89  1.55     -0.612   <- still ACCELERATING downward
+#     h6-base-rep 2.34  2.06  2.02  1.90  1.79  1.71     -0.172
+#     h6-utd1     2.40  2.25  2.17  1.89  1.77  1.70     -0.227
+# Falling is still being trained out at the moment every run so far has been stopped. Separately:
+# every 10M/20M-budget run in this project's history was killed at ~2.1M by plateau rules keyed on
+# signals the fall audit showed are blind, so "TD-MPC2 plateaus here" has never actually been tested.
+#
+# CONFIG = the fleet's measured winner (h6-flat, fitness 0.0936, falls 12.5%, tilt 6.5 deg -- better
+# posture than the PPO reference's 9.7) with ONE addition, plus every choice the fleet settled:
+#   horizon 6            H=6-trained arms cut falls 18.8% -> 12.5-17.2% vs the H=3-trained lean-C.
+#   flat_orientation -0.5  THE win. vs its matched seed (h6-base-rep): falls 14.8->12.5, tilt
+#                        9.5->6.5. Kept at -0.5, the value actually measured, not raised to PPO's
+#                        -2.183 -- one long run is no place to extrapolate an untested weight.
+#   soft gate 0.95/0.15  lean-C's, carried by every arm.
+#   updates_per_step 16  UTD 1.0 was tested (h6-utd1) and was the WORST arm, 0.0523. Staying at
+#                        UTD 0.5 saves ~40% of the wall clock at no measured cost.
+#   track_lin_vel_xy 0.5 NEW, and the only untested element. Every H=6 arm overshoots the command
+#                        (1.18-1.27x vs lean-C's 1.04x) because NOTHING prices exceeding it --
+#                        move_go clamps at 1.0, so the drift is planner exploitation of model
+#                        error, not reward-chasing. Collection speed was still climbing +0.069/1M
+#                        at the wall, so over 17M more steps this only gets worse, and we would be
+#                        training on one objective while grading on another. 0.5 is well under
+#                        PPO's 1.787. The stability fleet saw 1.0 collapse the gait, but that was
+#                        varied commands from a non-walking base; falls/min telemetry now makes
+#                        barbering visible within ~500k steps.
+#   buffer_size 10M      3.3 GB VRAM (of 16, with ~4.9 used by Isaac+model+MPPI). Holds the 400k
+#                        demo resident for the first ~10M steps. A no-eviction buffer for 20M would
+#                        need 20.4M rows = 6.75 GB and risks OOM; upstream evicts constantly at 1M.
+#   --no_early_stop      only DIVERGENCE (pi_loss>2.5) may cut this. See above.
+#
+# COST ~46 h at the fleet's measured 121 steps/s. Checkpoints every 50k steps, so stopping early
+# from TensorBoard costs nothing -- grade the latest model_<N>.pt.
+# WATCH: collect/falls_per_min (the reason for the run), collect/ground_speed_mps against a 0.300
+# command (the new tracking term should hold it near 0.30 rather than climbing), collect/torso_lean_deg,
+# and loss/pi_loss (>1.5 sustained = value overoptimism).
+# BARBERING CHECK: if falls/min drops while ground_speed collapses toward 0.15, the tracking term is
+# too strong -- stop, drop it to 0.25, resume.
+{"name": "long-20M", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 20000000, "seed": 21, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "10000000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5, "rewards.track_lin_vel_xy.weight": 0.5}, "notes": "The full-length run. h6-flat's measured config + track_lin_vel_xy 0.5 to price the overshoot, at 20M with the stoppers off. Question: does the walk settle if we finally let it run? Best so far is 12.5% of episodes containing a fall against the PPO reference's 6.2%."}
