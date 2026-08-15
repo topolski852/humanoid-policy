@@ -22,15 +22,16 @@
 #   soft gate 0.95/0.15  lean-C's, carried by every arm.
 #   updates_per_step 16  UTD 1.0 was tested (h6-utd1) and was the WORST arm, 0.0523. Staying at
 #                        UTD 0.5 saves ~40% of the wall clock at no measured cost.
-#   track_lin_vel_xy 0.5 NEW, and the only untested element. Every H=6 arm overshoots the command
-#                        (1.18-1.27x vs lean-C's 1.04x) because NOTHING prices exceeding it --
-#                        move_go clamps at 1.0, so the drift is planner exploitation of model
-#                        error, not reward-chasing. Collection speed was still climbing +0.069/1M
-#                        at the wall, so over 17M more steps this only gets worse, and we would be
-#                        training on one objective while grading on another. 0.5 is well under
-#                        PPO's 1.787. The stability fleet saw 1.0 collapse the gait, but that was
-#                        varied commands from a non-walking base; falls/min telemetry now makes
-#                        barbering visible within ~500k steps.
+#   NO track_lin_vel_xy  Take 1 tried this at 0.5 to price the overshoot and it had to be killed
+#                        at 1.54M. track_lin_vel_xy_yaw_frame_exp is exp(-err^2/std^2) with NO
+#                        uprightness or height factor, so a COLLAPSED robot sliding at the command
+#                        earns the full weight. That inverts the env's design rule (gated core is
+#                        the main positive; additive positives must stay small): a collapsed robot
+#                        went from -0.35/step to +0.15/step. Measured: ep_len 500 -> 444 and
+#                        FALLING (every prior run held exactly 500) while return rose 14.4 -> 17.4.
+#                        The overshoot is real but must be priced with an additive-NEGATIVE term
+#                        (penalise speed ABOVE command) or a GATED tracking term -- a separate
+#                        experiment, not a passenger on a 46 h run.
 #   buffer_size 10M      3.3 GB VRAM (of 16, with ~4.9 used by Isaac+model+MPPI). Holds the 400k
 #                        demo resident for the first ~10M steps. A no-eviction buffer for 20M would
 #                        need 20.4M rows = 6.75 GB and risks OOM; upstream evicts constantly at 1M.
@@ -38,9 +39,15 @@
 #
 # COST ~46 h at the fleet's measured 121 steps/s. Checkpoints every 50k steps, so stopping early
 # from TensorBoard costs nothing -- grade the latest model_<N>.pt.
-# WATCH: collect/falls_per_min (the reason for the run), collect/ground_speed_mps against a 0.300
-# command (the new tracking term should hold it near 0.30 rather than climbing), collect/torso_lean_deg,
-# and loss/pi_loss (>1.5 sustained = value overoptimism).
-# BARBERING CHECK: if falls/min drops while ground_speed collapses toward 0.15, the tracking term is
-# too strong -- stop, drop it to 0.25, resume.
-{"name": "long-20M", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 20000000, "seed": 21, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "10000000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5, "rewards.track_lin_vel_xy.weight": 0.5}, "notes": "The full-length run. h6-flat's measured config + track_lin_vel_xy 0.5 to price the overshoot, at 20M with the stoppers off. Question: does the walk settle if we finally let it run? Best so far is 12.5% of episodes containing a fall against the PPO reference's 6.2%."}
+# WATCH, in priority order:
+#   collect/mean_episode_len  MUST stay pinned at 500. Anything below means hard_collapse is firing,
+#                             which no healthy run in this project has ever done. This is the canary
+#                             that caught take 1 at 1.5M -- check it first, every time.
+#   collect/falls_per_min     the reason for the run; should keep declining past 3M.
+#   collect/ground_speed_mps  vs the 0.300 command. Overshoot is expected (h6-flat ended at 1.23x)
+#                             and is NOT priced in this config -- that is a deliberate, known gap.
+#   collect/torso_lean_deg    should sit within ~10 deg of 0.
+#   loss/pi_loss              >1.5 sustained = value overoptimism (the one stopper still armed).
+# RETURN IS NOT A HEALTH SIGNAL. Take 1's return was the HIGHEST ever recorded while it was
+# collapsing in ~22% of episodes. Read ep_len and falls_per_min, never return alone.
+{"name": "long-20M-v2", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 20000000, "seed": 21, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "10000000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5}, "notes": "The full-length run, take 2. h6-flat's measured config EXACTLY -- take 1 added track_lin_vel_xy 0.5 and had to be killed at 1.54M: that term is UNGATED and POSITIVE, so a collapsed robot sliding at the commanded speed earned the full 0.5/step. ep_len fell 500 -> 444 and declining while return ROSE 14.4 -> 17.4. Nothing untested goes into this run. Question: does the walk settle if we finally let it run? Best so far is 12.5% of episodes containing a fall against the PPO reference's 6.2%."}

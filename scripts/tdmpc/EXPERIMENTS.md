@@ -613,3 +613,45 @@ pi_loss divergence can cut it. ~46 h at 121 steps/s; checkpoints every 50k so st
 TensorBoard costs nothing. Watch `collect/falls_per_min` and `collect/ground_speed_mps` vs the
 0.300 command. If falls drop while speed collapses toward 0.15, the tracking term is too strong --
 stop, drop to 0.25, resume.
+
+### LONG RUN take 1 ABORTED at 1.54M (2026-08-15) — I added a farmable reward term
+Operator flagged that `mean_episode_len` looked wrong ~3.5 h in. It was: 443.9 and declining
+(427 latest) where **every one of the 5 prior runs held exactly 500.0**. ep_len < 500 means
+`hard_collapse` (base 0.30 m below standing) is firing -- the robot is genuinely ending up on the
+floor, which had never happened in this project.
+
+Cause: `track_lin_vel_xy 0.5`, the one untested element I added to price the overshoot.
+`track_lin_vel_xy_yaw_frame_exp` is `exp(-lin_vel_error/std^2)` with **no uprightness or height
+factor at all**. Per-step unscaled reward for a robot moving at the commanded 0.3 m/s:
+
+| term | weight | gated | upright walker | COLLAPSED, sliding |
+|---|---|---|---|---|
+| stand_walk (core) | 1.0 | YES | 0.60 | 0.00 |
+| upright_bonus | 0.3 | no (+) | 0.30 | 0.00 |
+| feet_air_time | 1.5 | YES | 0.10 | 0.00 |
+| flat_orientation_l2 | -0.5 | no (-) | -0.02 | -0.35 |
+| **track_lin_vel_xy** | **0.5** | **NO (+)** | **0.50** | **0.50** |
+| h6-flat total | | | 0.98 | **-0.35** |
+| take-1 total | | | 1.48 | **+0.15** |
+
+A collapsed robot went from -0.35/step (strictly worse than any upright state) to +0.15/step,
+because an ungated velocity-tracking term cannot distinguish a walk from a body sliding along the
+floor at the right speed. Measured: return ROSE 14.4 -> 17.4 (+21%) while episodes SHORTENED --
+earning more per step while collapsing more. That is the run-6 signature.
+
+This violated the env's own stated design rule, which is written at the top of `HybridRewardsCfg`:
+"(b) additive NEGATIVE penalties can only subtract, so they can't be farmed while falling;
+(c) additive POSITIVE shaping is kept small/moderate so it can't out-earn actually walking while
+upright." `flat_orientation_l2 -0.5` obeys it (negative, so unfarmable -- which is why h6-flat was
+clean). `track_lin_vel_xy +0.5` broke it: an ungated positive worth half the entire gated core.
+The stability fleet's warning about this term was in the journal and I reasoned it away as a
+varied-commands artifact; the real mechanism is simply that it is ungated.
+
+**Relaunched as long-20M-v2 with h6-flat's config EXACTLY.** The overshoot (1.23x) is real but
+stays unpriced for now -- it must be fixed with an additive-NEGATIVE penalty on speed ABOVE the
+command, or a properly gated tracking term, as its own experiment rather than a passenger on a
+46 h run.
+
+**Lesson for the watch-list: RETURN IS NOT A HEALTH SIGNAL.** Take 1 had the highest return ever
+recorded in this project while collapsing in ~22% of episodes. `collect/mean_episode_len` pinned
+at 500 is the canary; it is now first on the queue's watch-list.
