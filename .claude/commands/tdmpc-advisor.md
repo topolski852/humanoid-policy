@@ -32,23 +32,64 @@ do nothing, training continues fine.
 - If you are unsure, do LESS. A wasted 12-hour run is cheaper than derailing a healthy one.
 
 ## What to read (all read-only)
-- `logs/tdmpc/supervisor_journal.jsonl` — one line per finished experiment: spec, stop_reason,
-  grade (fitness, walk_gate, is_win), and the honest eval metrics. **This is your main input.**
-- `logs/tdmpc/supervisor_state.json` — next_index, runs, wins, best_fitness, best_ckpt.
+- **FIRST, every wake, run the deterministic detector — it is cheap, has no LLM judgement in it,
+  and is validated against runs whose outcome we already know:**
+  `.venv/bin/python scripts/tdmpc/watch_run.py --json`
+  (`--selftest` replays 4 known-outcome runs and must PASS). Exit 0 OK / 1 WARN / 2 CRITICAL.
+  It encodes the canary, divergence, staleness, and a rolling-mean peak-vs-now z-test. Do your own
+  reading AFTER it, to interpret — not instead of it. Both real failures in this project were
+  caught by a human eyeballing TensorBoard, which is what this exists to replace.
+- `logs/tdmpc/supervisor_journal<_TAG>.jsonl` — one line per finished experiment. **Fleets are
+  TAGGED now** (`--run_tag lean|h6|long|buf`), so the file is e.g. `supervisor_journal_buf.jsonl`
+  and the abort file is `control_buf.json`. Check which fleet is live before reading/writing:
+  `ps -eo cmd | grep supervisor.py` shows the `--run_tag`.
+- `logs/tdmpc/supervisor_state<_TAG>.json` — next_index, runs, wins, best_fitness, best_ckpt.
 - The current run's live curves: find the newest dir under `logs/tdmpc/tdmpc_biped/` and read
   its `run_config.json`; for TB scalars run `.venv/bin/python -c` importing
   `eureka.tb_utils.read_scalars('<run_dir>')` — do NOT launch tensorboard.
   Key tags: `collect/mean_episode_len`, `collect/mean_episode_return`,
   `collect/ground_speed_mps`, `loss/*` (pi_loss).
 - `scripts/tdmpc/EXPERIMENTS.md` — the journal + decision rules + why each past change was made.
-- `scripts/tdmpc/grade_run.py` — the fitness definition and the win bar (forward_speed ≥ 0.25,
-  fall_rate ≤ 3/min, ep_len ≥ 10 s). **Reward return is NOT trust-worthy** (it is gameable);
-  trust only `forward_speed_mean` (nets to ~0 for rocking-in-place) and `fall_rate_per_min`.
+- `scripts/tdmpc/grade_run.py` — objective **walk_v2** and the win bar: `forward_speed ≥ 0.25`,
+  `|torso_lean_fwd_deg| ≤ 15`, AND `pct_episodes_with_fall ≤ 10%`. Nothing has passed it yet
+  (best: 12.5%; the PPO reference manages 6.2%).
 
-## Decision rules (same ones the supervisor encodes — EXPERIMENTS.md:40-49)
-- HEALTHY (ep_len ↑/high, return ↑, pi_loss <2.5, forward speed rising) → do nothing.
-- REGRESSION (ep_len peaks then drops ≥25% for ≥300k) / DIVERGENCE (pi_loss >2.5) → the
-  supervisor already stops these; you don't need to abort. Only abort something it can't see.
+### SIGNALS — this list was wrong before 2026-08-16, re-read it
+- **`collect/mean_episode_len` is THE canary. It must sit at 500.** Below that, `hard_collapse` is
+  firing. Every healthy run in this project's history held exactly 500.0. Long-run take 1 sat at
+  443.9 and falling because an ungated positive reward term paid a collapsed robot to slide.
+- **`collect/mean_episode_return` IS NOT A HEALTH SIGNAL.** Take 1 had the highest return ever
+  recorded here while collapsing in ~22% of episodes. Never justify a decision with return.
+- **`fall_rate_per_min` / `falls` from the grader are BLIND.** They count only `hard_collapse`
+  (base 0.30 m below standing) and read 0.00 for policies that fall in 30% of episodes. Use
+  `pct_episodes_with_fall` / `real_falls_per_min` (tilt>45°) from the eval, and
+  `collect/falls_per_min` in TB.
+- Trust: `pct_episodes_with_fall`, `collect/falls_per_min`, `forward_speed_mean` **relative to the
+  command** (overshoot is a failure — recent runs hit 1.40x and it is unpriced), `torso_tilt_deg`,
+  `torso_lean_fwd_deg`, `loss/pi_loss`.
+
+## Decision rules — act on watch_run.py's verdict
+**CRITICAL → ABORT AND NOTIFY.** These are broken invariants, not judgement calls: the run is
+producing garbage and every further GPU-hour is wasted. Write
+`logs/tdmpc/control<_TAG>.json` = `{"abort_current": true, "reason": "<the detector's reason>"}`,
+append the evidence to `EXPERIMENTS.md`, and state plainly at the top of your output that you
+stopped a run and why, so the operator sees it immediately.
+  - CANARY `mean_episode_len < 495` → almost certainly a farmable reward term: an additive,
+    POSITIVE, UNGATED term lets a collapsed robot earn. Check the live run's `overrides` in
+    `run_config.json` against `HybridRewardsCfg`'s rule — gated core is the main positive,
+    additive positives must stay small, additive negatives are safe because they can only subtract.
+  - DIVERGENCE / STALLED → abort likewise.
+
+**WARN → NOTIFY ONLY. NEVER auto-abort a plateau.** Whether more GPU is worth spending is a VALUE
+judgement that belongs to the operator. Report peak, current, z, and slope, recommend, and stop.
+  - Note runs now launch with `--no_early_stop`, so the supervisor will NOT stop a plateau itself.
+
+**OK → do nothing.** If you do nothing, training continues fine.
+
+- Legacy note: the supervisor's own PLATEAU/REGRESSION/CONVERGED rules key on return and a raw
+  0.15 m/s speed floor — both poor signals. They are gated at `max(min_judge_steps, 50% of budget)`
+  since 2026-08-13, because every 10M/20M-budget run in this project's history was killed at ~2.1M
+  by them (one at 10.7% of its budget, over 0.002 m/s of noise).
 - PLATEAU mediocre (ep_len flat <300, forward speed stuck) → the supervisor stops it; your job
   is to append a *better next experiment* reacting to the failure mode.
 - CAN'T SURVIVE (ep_len <50 for ≥1M) → append a looser-termination or gentler-curriculum spec.
