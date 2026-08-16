@@ -655,3 +655,36 @@ command, or a properly gated tracking term, as its own experiment rather than a 
 **Lesson for the watch-list: RETURN IS NOT A HEALTH SIGNAL.** Take 1 had the highest return ever
 recorded in this project while collapsing in ~22% of episodes. `collect/mean_episode_len` pinned
 at 500 is the canary; it is now first on the queue's watch-list.
+
+## LONG RUN v2 STOPPED at 5.68M (2026-08-16) — it DID plateau, and then regressed
+Operator spotted a decline visually around 4.5M; the numbers put the peak at 4.65M and confirm it.
+
+Rolling 250k means, z in standard errors of that mean:
+| metric | peak | now @5.68M | change | z |
+|---|---|---|---|---|
+| ground_speed | 0.327 @ 4.65M | 0.308 | -5.8% | **-3.8** |
+| episode_return | 15.17 @ 4.69M | 14.20 | -6.3% | **-19.5** |
+| falls/min | 1.441 @ 5.37M | 1.645 | +14.2% | +1.2 (n.s.) |
+| value_loss | 0.190 @ 0.99M | 0.216 | +13.7% | **+99** |
+
+Slope per 1M: ground_speed +0.046 (1-2M) -> +0.026 -> +0.002 -> +0.005 -> **-0.014** (4.6-5.7M);
+falls/min -0.379 -> -0.266 -> -0.148 -> -0.100 -> **+0.133**. Improvement was gone by ~3M.
+
+Diagnostics: pi_entropy flat at -22.5 since 1.9M; grad_norm 0.02 -> 0.01; consistency_loss flat at
+0.0002; reward_loss flat at 0.115. The world model stopped learning. The ONLY component still
+moving was value_loss, and it was getting WORSE for the whole run.
+
+**Grading the 4.65M peak vs h6-flat at 3M: falls 12.5% BOTH. Identical.** Tilt 8.3 vs 6.5, overshoot
+1.40x vs 1.23x, fitness 0.0511 vs 0.0936. So 1.65M extra steps bought no safety at all -- the run
+converted training into SPEED, not stability, and the unpriced overshoot kept growing.
+
+**So the "it just never ran long enough" hypothesis is answered: NO.** With this configuration the
+walk tops out at ~4.6M. Something else binds.
+
+**Prime suspect, and it is my config choice.** `buffer_size 10M` meant NOTHING WAS EVER EVICTED --
+at 5.7M a batch was drawn uniformly from every transition ever collected, including the earliest
+~1M from a policy walking at 0.17 m/s. Recent data was 18% of the buffer, and would have been 5%
+by 20M. Upstream uses buffer_size 1M for a 10M budget, keeping only the most recent ~10%. A staling
+distribution predicts precisely the observed shape. -> buffer_queue.jsonl `buf-1M`, single variable,
+10M budget, same seed. Confound noted in that queue: a 1M buffer also evicts the demo at ~0.6M, so
+freshness and demo residency move together; torso_lean_deg drift after ~1M would implicate residency.

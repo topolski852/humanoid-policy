@@ -1,0 +1,38 @@
+# BUFFER-FRESHNESS TEST — single variable off long-20M-v2: buffer_size 10M -> 1M (upstream's value)
+#   supervisor.py --queue scripts/tdmpc/buffer_queue.jsonl --run_tag buf --grade_plant baseline
+#     --grade_horizon 6 --grade_warm_start --no_early_stop --max_env_steps 10000000
+#
+# WHAT long-20M-v2 SHOWED (stopped at 5.68M, 2026-08-16). It plateaued and then regressed:
+#     slope per 1M      1-2M     2-3M     3-4M     4-5M   4.6-5.7M
+#     ground_speed    +0.046   +0.026   +0.002   +0.005    -0.014
+#     falls/min       -0.379   -0.266   -0.148   -0.100    +0.133
+#   peak speed 0.327 @ 4.65M -> 0.308 (z -3.8); peak return 15.17 @ 4.69M -> 14.20 (z -19.5).
+#   Every loss flat (consistency 0.0002, reward 0.115) and gradients down to 0.01 -- the model had
+#   stopped learning -- while value_loss ROSE monotonically 0.190 -> 0.216. Grading the 4.65M peak:
+#   falls 12.5% of episodes, IDENTICAL to h6-flat at 3M, with worse tilt (8.3 vs 6.5) and worse
+#   overshoot (1.40x vs 1.23x). 1.65M extra steps bought no safety at all, only speed.
+#
+# HYPOTHESIS. buffer_size 10M meant NOTHING WAS EVER EVICTED: at 5.7M a batch was drawn uniformly
+# from every transition ever collected, including the earliest ~1M from a policy walking at
+# 0.17 m/s. Recent data was 18% of the buffer and would have been 5% by 20M. Upstream runs
+# buffer_size 1M for a 10M budget -- it deliberately keeps only the most recent ~10%. A staling
+# distribution predicts exactly the observed shape: improvement decaying as fresh data is diluted,
+# then reversing as the policy is fit to an average over its own history.
+#
+# KNOWN CONFOUND, stated up front: any buffer smaller than seed+budget also evicts the 400k PPO
+# demo (here at ~1.0M steps), so this changes freshness AND demo residency together. They cannot be
+# separated without a reserved-partition change to buffer.py. Mitigation: flat_orientation_l2 -0.5
+# now supplies continuous attitude pressure that lean-A (which drifted after its demo evicted)
+# never had. If this run drifts in torso_lean_deg after ~1M, residency is implicated, not freshness.
+#
+# Everything else is byte-identical to long-20M-v2 (= h6-flat's measured config): H=6, warm start,
+# soft gate 0.95/0.15, flat_orientation -0.5, UTD 0.5, bc_plan_std 0.15, 400k seed, 20k pretrain,
+# baseline plant, fixed cmd 0.3. Same seed 21 so the comparison is as tight as possible.
+#
+# BUDGET 10M (~23 h) = upstream's own default. DECISIVE MUCH EARLIER: long-20M-v2's improvement had
+# already decayed to +0.002/1M by 3-4M and peaked at 4.65M, so by ~6M (~14 h) the shape is clear.
+# Stop from TensorBoard the moment it is.
+# WATCH: mean_episode_len must stay 500; then falls_per_min (does the decay still set in at ~3M?);
+# ground_speed vs the 0.300 command (overshoot was 1.40x at the peak and unpriced); torso_lean_deg
+# after 1M (the confound check). RETURN IS NOT A HEALTH SIGNAL.
+{"name": "buf-1M", "entry": "bootstrap.py", "warm_start": "scratch", "variant": "walk-biped-tdmpc", "max_env_steps": 10000000, "seed": 21, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "20000", "--bc_plan_std", "0.15", "--buffer_size", "1000000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5}, "notes": "Single variable off long-20M-v2: buffer_size 10M -> 1M so the replay stays near-on-policy, as upstream does. Question: does improvement still decay to ~0 by 3-4M and peak at 4.65M, or does a fresh buffer keep it moving?"}
