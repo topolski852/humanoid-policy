@@ -688,3 +688,31 @@ by 20M. Upstream uses buffer_size 1M for a 10M budget, keeping only the most rec
 distribution predicts precisely the observed shape. -> buffer_queue.jsonl `buf-1M`, single variable,
 10M budget, same seed. Confound noted in that queue: a 1M buffer also evicts the demo at ~0.6M, so
 freshness and demo residency move together; torso_lean_deg drift after ~1M would implicate residency.
+
+### buf-1M ABORTED by advisor at 7.26M/10M (2026-08-17) — canary breach, NOT a reward hack
+`watch_run.py` CRITICAL: `mean_episode_len` 494.5 < 495 floor, sustained (7.25M window: 19/19
+readings below, mean 490.5) and declining — 496.7 @6.25M -> 500.0 @6.5M -> 498.4 @6.75M -> 494.5
+@7.0M -> 490.5 @7.25M. `hard_collapse` firing repeatedly. Advisor wrote `control_buf.json`.
+
+**Cause is NOT the one the canary rule assumes.** The rule says "suspect a farmable (ungated,
+positive) reward term"; this config is h6-flat's exactly — soft gate 0.95/0.15 plus
+`flat_orientation_l2 -0.5`, whose only additive term is NEGATIVE and therefore unfarmable. Contrast
+take-1's signature (return HIGHEST-ever while ep_len plunged 500->444 monotonically): here return
+16.7 is unremarkable, speed 0.377 is at its peak, falls 1.11/min is near the run's best, lean +4.4.
+This is a **speed-stability trade** — the gait reached a pace it cannot always hold, and genuine
+collapses crept in.
+
+**The run was the best this project has produced.** Peak ground_speed 0.3819 @ 6.61M = **+17% over
+long-20M-v2's best-ever 0.3267**, with falls/min 1.06 and lean +2.6 at its 6.5-6.8M best. It also
+answered the buffer question: a 1M (fresh) replay kept improving well past the 4.65M wall that
+stopped the 10M-buffer run, in a ~1M-step oscillation that peaked higher each cycle
+(4.14M 0.354 -> 5.82M 0.375 -> 6.61M 0.382).
+
+**Advisor calibration note for future wakes:** on this run the advisor twice called a dip a
+terminal decline (4.96M "recommend stopping"; 6.34M "canary will hit the floor in ~1.0M") and was
+wrong both times — both were legs of the oscillation. Sub-1M windows are not trends here. The
+breach that finally justified action was distinguished by being SUSTAINED (19/19 below floor) and
+MONOTONE across four windows, not by magnitude.
+
+**Grade `model_6602112.pt` (the 6.61M peak), not model_best.pt** — best_return tracks return, which
+this project has established is not a health signal.

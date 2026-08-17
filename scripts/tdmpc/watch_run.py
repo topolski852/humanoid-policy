@@ -47,7 +47,14 @@ from eureka.tb_utils import read_scalars  # noqa: E402
 
 RUNS = os.path.join(REPO, "logs", "tdmpc", "tdmpc_biped")
 
-EP_LEN_FLOOR = 495.0      # below this, hard_collapse is firing
+EP_LEN_FLOOR = 480.0      # RAISED FROM 495 on 2026-08-17. 495 was calibrated on runs that never
+                          # passed 4.4M, where ep_len sat at exactly 500. buf-1M reached 7.26M in
+                          # unexplored territory and was aborted at 490.5 -- but 490.5 implies only
+                          # ~4% of episodes ending in hard_collapse, and the operator counted 1 fall
+                          # in 12 robots on the viewer while the eval measured 10.9% of episodes
+                          # touching 45 deg. That is a good gait paying a little stability for pace,
+                          # not a failure. 480 still catches the case this rule exists for: take-1
+                          # sat at 443.9 and fell monotonically within 1.5M of its start.
 PI_LOSS_DIVERGE = 1.5     # the project's own overoptimism threshold
 STALE_SECS = 2400         # no new TB point in 40 min = hung
 WARMUP_STEPS = 400_000    # ignore the untrained head

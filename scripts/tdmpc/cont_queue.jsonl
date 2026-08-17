@@ -1,0 +1,33 @@
+# CONTINUE buf-1M from its 7.25M state -> +3M more (≈10M total equivalent)
+#   supervisor.py --queue scripts/tdmpc/cont_queue.jsonl --run_tag cont --grade_plant baseline
+#     --grade_horizon 6 --grade_warm_start --no_early_stop --max_env_steps 3000000
+#
+# WHY. buf-1M was aborted by the advisor at 7.26M on a canary floor of 495 that was calibrated on
+# runs which never passed 4.4M. The operator then watched the graded checkpoint: 1 fall in 12
+# robots (~8%), matching the measured 10.9% of episodes touching 45 deg, and judged it "a pretty
+# solid walk". ep_len 490.5 implies only ~4% of episodes ending in hard_collapse -- a good gait
+# paying a little stability for pace, not a failure. The floor is now 480 (watch_run.py), which
+# still catches take-1's 443.9-and-plunging signature.
+# At the abort, falls/min slope was still NEGATIVE (-0.062/1M) and 2.75M of budget was unused.
+#
+# THIS IS A WARM-START, NOT A TRUE RESUME. agent.save() stores only model weights + reward scale
+# (agent.py:307), so this restores the policy/world-model but NOT:
+#   * Adam moments for either optimiser -> reset (recovers over a few k updates)
+#   * the replay buffer -> restarts, re-seeded with 400k PPO-demo transitions
+#   * the step counter -> restarts at 0, so this run's "3M" is buf-1M's 7.25M -> ~10.25M
+#
+# pretrain_updates cut 20000 -> 5000 ON PURPOSE. After a warm start the buffer initially holds
+# ONLY demo data, so every burst update trains the good policy toward the 0.300 m/s demo. A full
+# 20k burst risks regressing the learned gait; 5k is enough to re-fit the value function to the
+# new buffer without letting demo-only data dominate. The re-seeded demo (which tracks 0.300
+# exactly) may also pull down the 1.25x overshoot -- that would be a welcome side effect, but it
+# is a hypothesis, not the reason for the change.
+#
+# Everything else identical to buf-1M: H=6, warm start, soft gate 0.95/0.15, flat_orientation
+# -0.5, UTD 0.5, buffer 1M, baseline plant, fixed cmd 0.3, seed 21.
+#
+# WATCH: ep_len (floor now 480); falls/min (was 1.06-1.24, still improving at the abort);
+# ground_speed vs the 0.300 command (buf-1M ended at 1.25x and NOT converging -- the operator's
+# read that it was slowing toward 0.3 was not supported by the slope, which was +0.0119/1M).
+# BASELINE TO BEAT: fitness 0.0528, falls 10.9% of episodes, tilt 8.66, lean +4.1, 1.44x cmd.
+{"name": "cont-from-7p25M", "entry": "bootstrap.py", "warm_start": "logs/tdmpc/tdmpc_biped/2026-08-16_13-50-26/model_7252320.pt", "variant": "walk-biped-tdmpc", "max_env_steps": 3000000, "seed": 21, "flags": ["--plant", "baseline", "--cmd_vx", "0.3", "--seed_transitions", "400000", "--pretrain_updates", "5000", "--bc_plan_std", "0.15", "--buffer_size", "1000000", "--horizon", "6", "--mppi_warm_start"], "overrides": {"rewards.stand_walk.params.upright_min": 0.95, "rewards.stand_walk.params.upright_margin": 0.15, "rewards.flat_orientation_l2.weight": -0.5}, "notes": "Continue buf-1M from model_7252320.pt for +3M. Warm-start, not a true resume (Adam + buffer restart). Question: does it find a new best beyond fitness 0.0528 / falls 10.9%?"}
