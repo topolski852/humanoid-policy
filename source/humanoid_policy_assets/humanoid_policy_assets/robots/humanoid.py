@@ -237,18 +237,35 @@ HUMANOID_SQUAT_POSE = {
 }
 
 # Per-joint firmware gains pulled from the ESCs (device truth). kp->position_kp, kd->velocity_kp.
-_CONTRACT_KP = {
-    "leg_left_hip_roll_joint": 20.0, "leg_left_hip_yaw_joint": 10.5, "leg_left_hip_pitch_joint": 68.4,
-    "leg_left_knee_pitch_joint": 27.0, "leg_left_ankle_pitch_joint": 18.0, "leg_left_ankle_roll_joint": 23.3,
-    "leg_right_hip_roll_joint": 20.0, "leg_right_hip_yaw_joint": 20.0, "leg_right_hip_pitch_joint": 68.4,
-    "leg_right_knee_pitch_joint": 30.0, "leg_right_ankle_pitch_joint": 20.0, "leg_right_ankle_roll_joint": 20.0,
-}
-_CONTRACT_KD = {
-    "leg_left_hip_roll_joint": 4.0, "leg_left_hip_yaw_joint": 0.5, "leg_left_hip_pitch_joint": 9.8,
-    "leg_left_knee_pitch_joint": 2.45, "leg_left_ankle_pitch_joint": 2.0, "leg_left_ankle_roll_joint": 4.0,
-    "leg_right_hip_roll_joint": 4.0, "leg_right_hip_yaw_joint": 1.0, "leg_right_hip_pitch_joint": 9.8,
-    "leg_right_knee_pitch_joint": 1.22, "leg_right_ankle_pitch_joint": 0.5, "leg_right_ankle_roll_joint": 2.0,
-}
+# --- TUNED GAINS (2026-08-17) ------------------------------------------------------------
+# Replaces the per-joint asymmetric ESC gains that were commissioned by hand. Bench tuning in
+# humanoid-tuner found kp=45 / kd=1.5 gave the best response for BOTH motor+gearbox types
+# (M6C12 legs, MAD5010 ankles), so this is the new sim<->real contract, not a sim-only knob:
+# the robot will be flashed with these and scripts/rsl_rl/play.py exports whatever is set here
+# into deploy/walk/leg_policy_contract.json, keeping train and deploy identical.
+#
+# Kept as per-joint dicts (rather than a scalar) so the export path stays per-joint and any
+# future re-asymmetrization is a value edit, not a structural one.
+#
+# SUPERSEDED per-joint values, for reference / revert:
+#   kp  hip_roll 20.0 | hip_yaw 10.5 L, 20.0 R | hip_pitch 68.4 | knee 27.0 L, 30.0 R
+#       ankle_pitch 18.0 L, 20.0 R | ankle_roll 23.3 L, 20.0 R
+#   kd  hip_roll 4.0 | hip_yaw 0.5 L, 1.0 R | hip_pitch 9.8 | knee 2.45 L, 1.22 R
+#       ankle_pitch 2.0 L, 0.5 R | ankle_roll 4.0 L, 2.0 R
+# NOTE the magnitude of two of these: hip_pitch drops 68.4/9.8 -> 45/1.5, i.e. a 6.5x cut in
+# damping on the strongest joint on the robot. That is what the bench says; it is also the joint
+# the 2026-07-14 divergence report flagged for a possible sim<->hardware SIGN inversion, still
+# unresolved. Watch hip_pitch behaviour in the first training run.
+# _CONTRACT_EFFORT is unchanged -- torque caps are firmware limits, not tuning.
+_TUNED_KP, _TUNED_KD = 45.0, 1.5
+_LEG_JOINT_NAMES = (
+    "leg_left_hip_roll_joint", "leg_left_hip_yaw_joint", "leg_left_hip_pitch_joint",
+    "leg_left_knee_pitch_joint", "leg_left_ankle_pitch_joint", "leg_left_ankle_roll_joint",
+    "leg_right_hip_roll_joint", "leg_right_hip_yaw_joint", "leg_right_hip_pitch_joint",
+    "leg_right_knee_pitch_joint", "leg_right_ankle_pitch_joint", "leg_right_ankle_roll_joint",
+)
+_CONTRACT_KP = {j: _TUNED_KP for j in _LEG_JOINT_NAMES}
+_CONTRACT_KD = {j: _TUNED_KD for j in _LEG_JOINT_NAMES}
 _CONTRACT_EFFORT = {
     "leg_left_hip_roll_joint": 6.0, "leg_left_hip_yaw_joint": 12.0, "leg_left_hip_pitch_joint": 9.5,
     "leg_left_knee_pitch_joint": 6.0, "leg_left_ankle_pitch_joint": 6.0, "leg_left_ankle_roll_joint": 7.0,
