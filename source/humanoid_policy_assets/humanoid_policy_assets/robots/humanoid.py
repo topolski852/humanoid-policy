@@ -257,7 +257,21 @@ HUMANOID_SQUAT_POSE = {
 # the 2026-07-14 divergence report flagged for a possible sim<->hardware SIGN inversion, still
 # unresolved. Watch hip_pitch behaviour in the first training run.
 # _CONTRACT_EFFORT is unchanged -- torque caps are firmware limits, not tuning.
-_TUNED_KP, _TUNED_KD = 45.0, 1.5
+# Gain preset, selectable with HUMANOID_GAIN_PRESET (default "tuned"). Only kp/kd change --
+# the plant (actuator model, armature, friction, latency) and _CONTRACT_EFFORT stay fixed, so a
+# run-to-run comparison isolates the GAINS and nothing else.
+#   tuned    45.0 / 1.5  bench-calibrated on the real motors (humanoid-tuner, 2026-08); deployed.
+#   berkeley 20.0 / 2.0  upstream Berkeley Humanoid Lite defaults, unchanged since the original
+#                        scaffold (commit 31cfd92). Lower stiffness AND higher damping than tuned,
+#                        i.e. markedly better damped -- the A/B for on-robot jitter.
+_GAIN_PRESETS = {"tuned": (45.0, 1.5), "berkeley": (20.0, 2.0)}
+_GAIN_PRESET = os.environ.get("HUMANOID_GAIN_PRESET", "tuned").strip().lower()
+if _GAIN_PRESET not in _GAIN_PRESETS:
+    raise ValueError(
+        f"HUMANOID_GAIN_PRESET={_GAIN_PRESET!r} is not one of {sorted(_GAIN_PRESETS)}"
+    )
+_TUNED_KP, _TUNED_KD = _GAIN_PRESETS[_GAIN_PRESET]
+print(f"[INFO] humanoid gain preset '{_GAIN_PRESET}': kp={_TUNED_KP} kd={_TUNED_KD}")
 _LEG_JOINT_NAMES = (
     "leg_left_hip_roll_joint", "leg_left_hip_yaw_joint", "leg_left_hip_pitch_joint",
     "leg_left_knee_pitch_joint", "leg_left_ankle_pitch_joint", "leg_left_ankle_roll_joint",
