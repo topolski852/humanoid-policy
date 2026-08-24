@@ -80,7 +80,36 @@ The smoothness penalty is effectively **switched off**. That is why the gait is 
 
 ---
 
-## 3. The three runs
+## 3. PREREQUISITE — update `_CONTRACT_EFFORT` before any of these runs
+
+**Do this first. It changes the plant, so it must be identical across all three runs and the
+full run.**
+
+`source/humanoid_policy_assets/humanoid_policy_assets/robots/humanoid.py` still has **6.0 Nm**
+knees. The robot has since been flashed and verified at:
+
+| joint | was | now (flashed, verified 12/12) |
+|---|---|---|
+| `leg_left_knee_pitch_joint` | 6.0 | **11.0** |
+| `leg_right_knee_pitch_joint` | 6.0 | **11.0** |
+| `leg_right_ankle_roll_joint` | 6.0 | **7.0** |
+
+Why the knees were raised: on hardware they showed a persistent *static* droop — mean error
+−0.136 / −0.198 rad with |mean|/rms ≈ 0.5, i.e. the knee sat more bent than commanded and 6 Nm
+could not extend it. That implied 6.1 / 8.9 Nm of steady demand against a 6.0 cap, saturating
+38.7% / 45.1% of policy steps. Motor ceiling is Kt·I·gear ≈ 26.9 Nm and `leg_left_hip_yaw_joint`
+already runs 12.0 Nm on the identical actuator. Raising it fixed the droop (knee mean error →
+−0.036 / −0.025, a 4–8× improvement).
+
+⚠️ **This raises the weights you will need.** The 6 Nm cap was acting as an *implicit* smoothness
+constraint in both sim and hardware — the joint simply could not execute fast, large commands. At
+11 Nm that constraint is gone, so the explicit penalties now have to do work the torque ceiling was
+doing for free. If run B looks only marginally better, go to run C rather than concluding the
+weights are the wrong lever.
+
+---
+
+## 4. The three runs
 
 Edit the four weights in the `RewardsCfg` class of
 `source/humanoid_policy/humanoid_policy/tasks/locomotion/velocity/config/biped/env_cfg.py`.
@@ -112,7 +141,7 @@ Record for each run: run directory, final `mean_reward`, final `mean_episode_len
 
 ---
 
-## 4. Screening — run this on each exported `policy.onnx`
+## 5. Screening — run this on each exported `policy.onnx`
 
 **Do not judge these runs on reward.** A policy that has collapsed into standing scores *well* on
 smoothness and badly on nothing obvious. Judge on gait frequency and whether it still steps.
@@ -192,7 +221,7 @@ bug — so screen at vx ≥ 0.4 and ignore a flat result at 0.3.
 
 ---
 
-## 5. What to report back
+## 6. What to report back
 
 For each of A, B, C:
 
@@ -209,13 +238,9 @@ rather than only penalising motion).
 
 ---
 
-## 6. Before the full run
+## 7. Before the full run
 
-If a config passes, also update the sim↔real contract to match the hardware as it now stands:
-
-- `_CONTRACT_EFFORT` in `source/humanoid_policy_assets/humanoid_policy_assets/robots/humanoid.py`
-  still has **6.0 Nm** knees. The robot is now flashed to **11.0 Nm**
-  (`left/right_knee_pitch`) and **7.0 Nm** (`right_ankle_roll`). Update before the full run or sim
-  and hardware diverge on exactly the constraint that caused this.
+- Confirm `_CONTRACT_EFFORT` (§3) was applied to **all three** sweep runs. If it was not, the
+  screening results were produced on a different plant than the robot and do not transfer — rerun.
 - Consider exporting `action_limit_lower/upper` into `leg_policy_contract.json`. They currently
   live only in `policy_latest.yaml`, so the runtime contract had to be updated by hand.
