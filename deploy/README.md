@@ -6,7 +6,7 @@ Exported policies for `humanoid-control` to load on the robot. Three policies ma
 | folder | policy | motion | trained from | checkpoint |
 |---|---|---|---|---|
 | `standup/` | squat → stand | rise to standing | `standup_biped/2026-07-08_23-43-42` | model_700 |
-| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-08-18_20-45-17` | model_5999 (final of 6000) |
+| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-08-21_21-20-23_kp20-berkeley` | model_5999 (final of 6000) |
 | `squat/` | stand → squat | controlled descent to squat | `squat_biped/2026-07-09_17-11-40` | model_500 |
 
 Each folder contains:
@@ -22,6 +22,9 @@ current files into a new dated subfolder there (with a short `ARCHIVE_NOTE.md` g
 checkpoint, and what changed) so any deployed policy can be rolled back or compared.
 
 Archived so far:
+- `walk/archive/2026-08-18_kp45-bench-tuned/` — the **kp=45 / kd=1.5** bench-tuned policy
+  (run 2026-08-18_20-45-17). Live 2026-08-20 to 2026-08-24; replaced because it was jittery
+  on the real robot (underdamped once real link inertia is accounted for).
 - `walk/archive/2026-07-18_actuator-model-asymmetric-gains/` — the actuator-model retrain
   with per-joint asymmetric gains (kp 10.5-68.4 / kd 0.5-9.8); superseded by the bench-tuned
   uniform kp=45 / kd=1.5 retrain.
