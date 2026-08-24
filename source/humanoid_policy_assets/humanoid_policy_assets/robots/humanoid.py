@@ -281,10 +281,20 @@ _LEG_JOINT_NAMES = (
 _CONTRACT_KP = {j: _TUNED_KP for j in _LEG_JOINT_NAMES}
 _CONTRACT_KD = {j: _TUNED_KD for j in _LEG_JOINT_NAMES}
 _CONTRACT_EFFORT = {
+    # Firmware torque caps, flashed and verified 12/12 on hardware 2026-08-24.
+    # Knees raised 6.0 -> 11.0: on the robot they showed a persistent STATIC droop (mean error
+    # -0.136 / -0.198 rad), i.e. ~6.1 / 8.9 Nm of steady demand against a 6.0 cap, saturating
+    # 38.7% / 45.1% of policy steps. Motor ceiling is Kt*I*gear ~= 26.9 Nm and hip_yaw already
+    # runs 12.0 on the identical actuator. Raising it cut the droop 4-8x (-> -0.036 / -0.025).
+    # right_ankle_roll 6.0 -> 7.0 matches the already-7.0 left side.
+    # NOTE: the 6.0 knee cap was acting as an ACCIDENTAL low-pass filter -- with authority
+    # restored the knee follows the policy's 4-5 Hz command, so the explicit smoothness
+    # penalties now have to do work the torque ceiling was doing for free.
+    # See docs/walk-smoothness-sweep.md sec 3.
     "leg_left_hip_roll_joint": 6.0, "leg_left_hip_yaw_joint": 12.0, "leg_left_hip_pitch_joint": 9.5,
-    "leg_left_knee_pitch_joint": 6.0, "leg_left_ankle_pitch_joint": 6.0, "leg_left_ankle_roll_joint": 7.0,
+    "leg_left_knee_pitch_joint": 11.0, "leg_left_ankle_pitch_joint": 6.0, "leg_left_ankle_roll_joint": 7.0,
     "leg_right_hip_roll_joint": 6.0, "leg_right_hip_yaw_joint": 6.0, "leg_right_hip_pitch_joint": 9.5,
-    "leg_right_knee_pitch_joint": 6.0, "leg_right_ankle_pitch_joint": 6.0, "leg_right_ankle_roll_joint": 6.0,
+    "leg_right_knee_pitch_joint": 11.0, "leg_right_ankle_pitch_joint": 6.0, "leg_right_ankle_roll_joint": 7.0,
 }
 
 _LEG_GROUP = ["leg_.*_hip_yaw_joint", "leg_.*_hip_roll_joint", "leg_.*_hip_pitch_joint", "leg_.*_knee_pitch_joint"]

@@ -1,4 +1,5 @@
 import math
+import os
 
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -13,6 +14,35 @@ import humanoid_policy.tasks.locomotion.velocity.mdp as mdp
 from humanoid_policy.tasks.locomotion.velocity.velocity_env_cfg import LocomotionVelocityEnvCfg
 from humanoid_policy_assets.robots.humanoid import HUMANOID_BIPED_WALK_CFG, HUMANOID_LEG_JOINTS
 from humanoid_policy import pose_lib
+
+# --- walk smoothness sweep (docs/walk-smoothness-sweep.md) --------------------------------
+# The deployed policy's gait runs at 5.1 Hz, which the real robot cannot execute (peak demanded
+# torque 47.9 Nm vs a 26.9 Nm motor ceiling; knees sag IN PHASE, corr +0.91). Runtime fixes are
+# exhausted -- an action low-pass filter smooths the gait only by deleting it. The lever that is
+# left is training: these smoothness penalties exist but are effectively switched off.
+#
+# Select with HUMANOID_SMOOTH_PRESET. Only these three weights change; dof_acc_l2 is unchanged.
+#   off  (default)  the shipped values -- reproduces the 5.1 Hz gait
+#   A    light      ~13% of the tracking reward
+#   B    moderate   ~27%   <-- run first, most likely to land in the useful band
+#   C    strong     ~60%   <-- collapse-into-standing risk lives here; a plausible outcome
+#
+# Screen the result with scripts/screen_gait.py -- judge on gait frequency and whether it still
+# steps, NEVER on reward: a policy collapsed into standing scores well on smoothness.
+_SMOOTH_PRESETS = {
+    "off": (-0.014, 0.0,    0.0),
+    "a":   (-0.05,  -0.002, -1e-4),
+    "b":   (-0.10,  -0.005, -3e-4),
+    "c":   (-0.20,  -0.010, -1e-3),
+}
+_SMOOTH_PRESET = os.environ.get("HUMANOID_SMOOTH_PRESET", "off").strip().lower()
+if _SMOOTH_PRESET not in _SMOOTH_PRESETS:
+    raise ValueError(
+        f"HUMANOID_SMOOTH_PRESET={_SMOOTH_PRESET!r} is not one of {sorted(_SMOOTH_PRESETS)}"
+    )
+_W_ACTION_RATE, _W_ACTION_L2, _W_DOF_VEL = _SMOOTH_PRESETS[_SMOOTH_PRESET]
+print(f"[INFO] walk smoothness preset '{_SMOOTH_PRESET}': "
+      f"action_rate_l2={_W_ACTION_RATE} action_l2={_W_ACTION_L2} dof_vel_l2={_W_DOF_VEL}")
 
 # Spawn the walk policy from the authored `stand` pose (plus the reset randomization below), so it is
 # robust to exactly where the standup policy ends -> clean stand->walk handoff. Falls back to the cfg
@@ -200,19 +230,19 @@ class RewardsCfg:
     # joint motion smoothness
     action_rate_l2 = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.014,
+        weight=_W_ACTION_RATE,
     )
     # action_l2 / dof_vel_l2: hardware-safety penalties (docs/walk-policy-divergence-report.md
     # §4B) that suppress high-frequency, large-amplitude actions. Berkeley/g2c3 leave them OFF
     # (they had over-damped the gait into standing); re-introduce with small weights for sim->real.
     action_l2 = RewTerm(
         func=mdp.action_l2,
-        weight=0.0,
+        weight=_W_ACTION_L2,
     )
     dof_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
-        weight=0.0,
+        weight=_W_DOF_VEL,
     )
     dof_torques_l2 = RewTerm(
         func=mdp.joint_torques_l2,
