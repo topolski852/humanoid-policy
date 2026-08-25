@@ -1,6 +1,6 @@
 # Walk smoothness sweep — 3 fast-profile runs
 
-**Status:** sweep complete 2026-08-25; run D (midpoint) in flight. **Owner:** training PC. **Created:** 2026-08-24.
+**Status:** sweep complete; **preset A selected**; full run launched 2026-08-25 02:13. **Owner:** training PC. **Created:** 2026-08-24.
 **Goal:** find reward weights that lower the walk policy's control frequency from **5.1 Hz to
 ~1.5–2.5 Hz** without collapsing the gait into standing, then pick one for a full run.
 
@@ -284,3 +284,64 @@ pre-flash intuition.
 **Action:** per §6, a fourth fast run **D** at the A/B midpoint (`-0.075 / -0.0035 / -2e-4`) before
 committing ~30 h to a full run. The cliff is between B and C, so the A-B interval is the safe place
 to search.
+
+
+---
+
+## 9. Run D + full velocity sweep — the decision (2026-08-25)
+
+Run D (`2026-08-25_00-06-03_smoothD`, midpoint -0.075 / -0.0035 / -2e-4) did **not** behave as an
+interpolation between A and B. Its training metrics land exactly between them (reward 10.24,
+ep_len 406.5) yet it does not step at all below 0.7 m/s. **The weight -> gait mapping is not
+monotonic, and reward/episode-length do not predict it.** Judge only on the screener.
+
+Re-screening every policy across vx = 0.3 ... 1.0 (rather than the original 0.3-0.6) is what
+actually settled the choice:
+
+**Knee swing (rad)** — >0.15 stepping properly, <0.05 not stepping
+
+| run | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 1.0 |
+|---|---|---|---|---|---|---|---|
+| baseline | 0.000 | 0.606 | 0.871 | 0.848 | 1.071 | 1.319 | 1.623 |
+| **A** | **0.159** | **0.419** | **0.621** | **0.670** | **0.707** | **0.843** | **0.868** |
+| B | 0.139 | 0.092 | 0.390 | 0.590 | 0.661 | 0.736 | 0.699 |
+| C | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.059 |
+| D | 0.000 | 0.000 | 0.033 | 0.040 | 0.747 | 0.802 | 0.847 |
+
+**S(da^2)** — target < 1.5
+
+| run | 0.4 | 0.5 | 0.6 | 1.0 |
+|---|---|---|---|---|
+| baseline | 4.18 | 4.68 | 5.49 | 13.31 |
+| A | 1.37 | 1.87 | 2.24 | 3.15 |
+| B | 0.07 | 0.35 | 0.77 | 0.57 |
+
+- **C** is genuinely dead everywhere.
+- **D**'s deadband moved out to 0.7 m/s — for a robot commanded at 0.4-0.6 that is worse than a
+  collapse, because it looks healthy on every training metric.
+- **B** dips to 0.092 rad at vx=0.40, *below* its own 0.3 value. Non-monotonic, i.e. unstable
+  exactly inside the commanded band.
+- **A** is monotonic and clean at every speed, knee corr -0.84 to -0.98 throughout, and holds the
+  highest episode length of the penalised runs (411.6).
+
+**Selected: A.** It is the only policy that steps reliably across the whole commanded range. Its
+one miss is action rate above vx=0.4 (1.87 / 2.24 vs <1.5) — still a 2.5x reduction on the
+baseline that failed on hardware, alongside a 2x frequency reduction. B's smoothness advantage is
+bought by not reliably stepping at 0.4, and a policy that will not step in the commanded range
+cannot be rescued by being smooth. The midpoint gamble already failed once (D), so no further
+interpolation was attempted.
+
+### Full run launched
+
+    logs/rsl_rl/biped/2026-08-25_02-13-41_smoothA-full
+    HUMANOID_SMOOTH_PRESET=A   -0.05 / -0.002 / -1e-4   (verified in params/env.yaml)
+    HUMANOID_GAIN_PRESET=tuned  kp=45.0 / kd=1.5        (verified)
+    knee effort_limit 11.0                              (verified)
+    --profile full: 24576 envs x 64 steps x 6000 iters, NO --plateau
+
+No early stop: it matches how all four sweep runs were scored, and `--plateau` keys on reward,
+which sec 2 explicitly rules out as a criterion here.
+
+⚠️ **The full run may not reproduce A's gait.** It uses 6x the batch (24576 vs 4096 envs), so
+gradient noise differs; D already showed this reward landscape is not smooth. Screen the result
+with `screen_gait.py` across vx = 0.3-1.0 before exporting anything to `deploy/walk`.
