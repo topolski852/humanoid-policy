@@ -1,6 +1,6 @@
 # Walk smoothness sweep — 3 fast-profile runs
 
-**Status:** ready to run. **Owner:** training PC. **Created:** 2026-08-24.
+**Status:** sweep complete 2026-08-25; run D (midpoint) in flight. **Owner:** training PC. **Created:** 2026-08-24.
 **Goal:** find reward weights that lower the walk policy's control frequency from **5.1 Hz to
 ~1.5–2.5 Hz** without collapsing the gait into standing, then pick one for a full run.
 
@@ -244,3 +244,43 @@ rather than only penalising motion).
   screening results were produced on a different plant than the robot and do not transfer — rerun.
 - Consider exporting `action_limit_lower/upper` into `leg_policy_contract.json`. They currently
   live only in `policy_latest.yaml`, so the runtime contract had to be updated by hand.
+
+
+---
+
+## 8. Sweep results — 2026-08-25
+
+All three runs used `--profile fast` (4096 envs x 24 steps x 6000 iters), gains `tuned` 45/1.5,
+and the §3 effort limits (knees 11.0 Nm), applied before run A. Weights were selected via
+`HUMANOID_SMOOTH_PRESET` rather than hand-edited, so each run's weights are printed in its log.
+
+| | baseline (deployed) | **A** light | **B** moderate | **C** strong | target |
+|---|---|---|---|---|---|
+| run dir | `2026-08-18_20-45-17` | `2026-08-24_19-52-36_smoothA` | `2026-08-24_17-33-47_smoothB` | `2026-08-24_21-57-18_smoothC` | |
+| gait Hz | 5.00-5.31 | 2.50-3.12 | 0.62-1.69 | collapsed | 1.0-3.0 |
+| knee L/R corr | -0.58/-0.67 | **-0.89/-0.98** | -0.29/-0.93 | n/a | <= -0.3 |
+| knee swing (rad) | 0.61-0.87 | 0.159-0.670 | 0.092-0.590 | **0.000** | 0.15-0.5 |
+| peak abs(v) | 15.2-17.8 | 2.48-7.00 | 1.01-7.98 | 0.00 | < 5 |
+| S(da^2) | 4.18-5.49 | 1.87-2.24 @speed | **0.35-0.77** | 0.00 | < 1.5 |
+| mean_episode_length | 441.9 | 411.6 | 402.3 | 356.7 | higher better |
+| mean_reward | 13.50 | 10.56 | 9.60 | 6.94 | *not a criterion* |
+| verdict | FAIL (unexecutable) | in-band | in-band | **COLLAPSED** | |
+
+**C collapsed outright** — swing 0.000 rad at every speed, while scoring perfectly on every
+smoothness metric. This is precisely the failure mode §2 warns about and the reason the screening
+metric is gait frequency, not reward.
+
+**Neither A nor B is cleanly correct.** Each clears the §5 pass/fail bar but fails a different
+secondary target:
+- **A** fails action rate at speed (S(da^2) 2.24 vs <1.5) — the quantity tied most directly to the
+  torque demand and the encoder fault that stopped the hardware run.
+- **B** fails gait phase at vx=0.40 (knee corr -0.29, swing 0.092 rad) — thin exactly inside the
+  range the robot gets commanded through.
+
+Both are 2-4x better than the baseline on frequency and cut peak velocity by more than half, so the
+training lever works; the §3 warning also held — the weights that were needed are well above the
+pre-flash intuition.
+
+**Action:** per §6, a fourth fast run **D** at the A/B midpoint (`-0.075 / -0.0035 / -2e-4`) before
+committing ~30 h to a full run. The cliff is between B and C, so the A-B interval is the safe place
+to search.

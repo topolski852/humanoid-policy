@@ -34,6 +34,10 @@ _SMOOTH_PRESETS = {
     "a":   (-0.05,  -0.002, -1e-4),
     "b":   (-0.10,  -0.005, -3e-4),
     "c":   (-0.20,  -0.010, -1e-3),
+    # D = midpoint of A and B. Sweep result 2026-08-25: A and B both land in-band but each
+    # fails a different secondary target (A: S(da^2) 2.24 > 1.5 at speed; B: knee corr -0.29
+    # and swing 0.092 rad at vx=0.40). C collapsed outright, so the cliff is past B.
+    "d":   (-0.075, -0.0035, -2e-4),
 }
 _SMOOTH_PRESET = os.environ.get("HUMANOID_SMOOTH_PRESET", "off").strip().lower()
 if _SMOOTH_PRESET not in _SMOOTH_PRESETS:
