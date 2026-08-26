@@ -1,6 +1,6 @@
 # Walk smoothness sweep — 3 fast-profile runs
 
-**Status:** sweep complete; **preset A selected**; full run launched 2026-08-25 02:13. **Owner:** training PC. **Created:** 2026-08-24.
+**Status:** full run complete. ⚠️ **See §10 — the screening method used in §5-§9 is unreliable; conclusions revised.** **Owner:** training PC. **Created:** 2026-08-24.
 **Goal:** find reward weights that lower the walk policy's control frequency from **5.1 Hz to
 ~1.5–2.5 Hz** without collapsing the gait into standing, then pick one for a full run.
 
@@ -345,3 +345,60 @@ which sec 2 explicitly rules out as a criterion here.
 ⚠️ **The full run may not reproduce A's gait.** It uses 6x the batch (24576 vs 4096 envs), so
 gradient noise differs; D already showed this reward landscape is not smooth. Screen the result
 with `screen_gait.py` across vx = 0.3-1.0 before exporting anything to `deploy/walk`.
+
+
+---
+
+## 10. ⚠️ Correction — the ideal-closed-loop screener is not trustworthy (2026-08-26)
+
+The full run (`2026-08-25_02-13-41_smoothA-full`, preset A) completed 6000 iterations with the
+best training metrics of any walk run to date (reward 17.27, ep_len 476.9 vs the baseline's
+13.50 / 441.9). `screen_gait.py` then reported it **COLLAPSED at every speed** — zero motion on
+all 12 joints.
+
+That verdict was **wrong**. Measured in Isaac with `eval_plant_compare.py`:
+
+| | fwd speed (cmd 0.5) | joint_vel_rms | action_rate_rms | ep_len_s | falls/min |
+|---|---|---|---|---|---|
+| baseline | 0.500 | 2.145 | 0.480 | 19.69 | 0.234 |
+| A (fast) | 0.489 | 1.880 | 0.379 | 19.25 | 0.586 |
+| B | 0.480 | 1.675 | 0.332 | 18.82 | 0.586 |
+| C | 0.466 | 1.542 | 0.280 | 18.55 | 1.031 |
+| D | 0.483 | 1.760 | 0.346 | 18.55 | 0.914 |
+| **A-FULL** | **0.485** | 1.840 | 0.357 | **19.54** | **0.141** |
+
+Every policy walks, including C and D, which the screener also called collapsed. In the simulator
+the weights behave **monotonically** (smoothness rises with penalty strength, stability falls) —
+the non-monotonic mess in §9 was an artifact of the screener, not a property of the reward.
+
+### Why the screener fails
+
+It drives the policy with synthetic observations: `base_ang_vel` pinned to `[0,0,0]`,
+`projected_gravity` pinned to `[0,0,-1]`, and joint states from its own first-order integrator
+(`track=0.9`). A policy that relies on base-motion feedback to generate gait phase never starts
+stepping under those inputs. Fast-A happened to be self-oscillating enough to run open-loop;
+the full-profile policy is not. **False "collapsed" verdicts are the expected failure mode.**
+
+### The premise of this document is also affected
+
+§1 lists the policy gait as **5.12 Hz (ideal closed loop)**. Measured in Isaac, the same baseline
+policy walks at **1.62 Hz** with knee correlation **-0.83** and 100% of envs stepping — a healthy
+antiphase gait. The 5.12 Hz figure comes from the same class of idealised model as the screener.
+
+What remains solid is the **hardware** evidence, which was measured on the robot, not modelled:
+knees in phase at **+0.91**, demanded torque up to **47.9 Nm** against a ~26.9 Nm ceiling, and the
+encoder fault once the knee had authority to follow. Sim says the gait is fine; hardware says it
+is not. **That gap is the actual problem**, and no amount of sim-side reward tuning can be
+validated against it from sim alone.
+
+### Standing conclusions
+
+1. `scripts/rsl_rl/eval_plant_compare.py` is now instrumented with `EVAL_GAIT=1` to report
+   `gait_hz_median`, `knee_corr_median`, `knee_swing_median` and `envs_stepping_pct` from real
+   simulator rollouts. **Use it, not `screen_gait.py`, to judge a gait.**
+2. `scripts/screen_gait.py` is retained only as a cheap smoothness probe. Its "COLLAPSED" verdict
+   means "did not self-oscillate under synthetic inputs" — NOT that the policy cannot walk.
+3. **A-FULL is a real improvement** on the baseline in sim: 26% lower action rate, 14% lower joint
+   velocity, and a **40% lower fall rate** (0.141 vs 0.234 /min) at the same tracked speed. It is
+   the best candidate to deploy, but whether it fixes the hardware jitter is **unverified and not
+   verifiable from sim**.

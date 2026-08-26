@@ -70,6 +70,10 @@ from importlib.metadata import version as _pkg_version  # noqa: E402
 import humanoid_policy.tasks  # noqa: F401,E402
 
 
+_KNEE_TRAJ = [] if os.environ.get("EVAL_GAIT") else None
+_KNEE_IDX = None
+
+
 def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
@@ -106,6 +110,9 @@ def main():
 
     uenv = env.unwrapped
     robot = uenv.scene["robot"]
+    global _KNEE_IDX
+    _names = robot.data.joint_names
+    _KNEE_IDX = [_names.index("leg_left_knee_pitch_joint"), _names.index("leg_right_knee_pitch_joint")]
     dt = float(uenv.step_dt)  # policy step (s)
     dev = uenv.device
     N = uenv.num_envs
@@ -148,6 +155,8 @@ def main():
                 falls += (dones & ~touts).sum()
                 timeouts += touts.sum()
                 n_steps += 1
+                if _KNEE_TRAJ is not None:
+                    _KNEE_TRAJ.append(robot.data.joint_pos.torch[:, _KNEE_IDX].clone().cpu())
             prev_action = actions
 
     denom = max(n_steps * N, 1)
@@ -171,6 +180,23 @@ def main():
         "fall_rate_per_min": float(falls.item() / env_seconds * 60.0),
         "mean_episode_len_s": float(env_seconds / resets) if resets > 0 else float("inf"),
     }
+    if _KNEE_TRAJ:
+        import numpy as _np
+        tr = torch.stack(_KNEE_TRAJ).numpy()          # (T, N, 2) left/right knee
+        f = _np.fft.rfftfreq(tr.shape[0], dt)
+        hzs, cors = [], []
+        for e in range(tr.shape[1]):
+            l, r = tr[:, e, 0], tr[:, e, 1]
+            if _np.ptp(l) < 0.02:
+                continue
+            P = _np.abs(_np.fft.rfft(l - l.mean())) ** 2
+            hzs.append(float(f[1:][_np.argmax(P[1:])]))
+            lc, rc = l - l.mean(), r - r.mean()
+            cors.append(float(lc @ rc / (_np.linalg.norm(lc) * _np.linalg.norm(rc) + 1e-9)))
+        metrics["gait_hz_median"] = float(_np.median(hzs)) if hzs else 0.0
+        metrics["knee_corr_median"] = float(_np.median(cors)) if cors else 0.0
+        metrics["knee_swing_median"] = float(_np.median(_np.ptp(tr, axis=0)))
+        metrics["envs_stepping_pct"] = 100.0 * len(hzs) / tr.shape[1]
     print("[eval] RESULT " + json.dumps(metrics))
     if args_cli.out:
         os.makedirs(os.path.dirname(os.path.abspath(args_cli.out)), exist_ok=True)
