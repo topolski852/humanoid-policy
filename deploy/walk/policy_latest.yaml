@@ -80,9 +80,9 @@ default_joint_positions:
 num_observations: 45
 history_length: 0
 command_velocity:
-- -0.21391244232654572
-- -0.11313767731189728
-- 0.6296646595001221
+- -0.3438819944858551
+- 0.00502743711695075
+- -0.2873845398426056
 num_actions: 12
 action_scale: 0.25
 action_indices:

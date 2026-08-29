@@ -6,7 +6,7 @@ Exported policies for `humanoid-control` to load on the robot. Three policies ma
 | folder | policy | motion | trained from | checkpoint |
 |---|---|---|---|---|
 | `standup/` | squat → stand | rise to standing | `standup_biped/2026-07-08_23-43-42` | model_700 |
-| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-08-25_02-13-41_smoothA-full` | model_5999 (final of 6000) |
+| `walk/` | velocity-tracking walk | omnidirectional walk (spawns from stand) | `biped/2026-08-28_00-09-42_smoothB-full-resumed` | model_5999 (final of 6000) |
 | `squat/` | stand → squat | controlled descent to squat | `squat_biped/2026-07-09_17-11-40` | model_500 |
 
 Each folder contains:
@@ -22,6 +22,9 @@ current files into a new dated subfolder there (with a short `ARCHIVE_NOTE.md` g
 checkpoint, and what changed) so any deployed policy can be rolled back or compared.
 
 Archived so far:
+- `walk/archive/2026-08-25_smoothA-full/` — the **smoothness preset A** full-profile policy.
+  Live 2026-08-26; replaced after it **faulted the encoders across the whole leg** on the robot
+  despite being measurably smoother than the baseline in sim.
 - `walk/archive/2026-08-21_kp20-berkeley/` — the **kp=20 / kd=2.0** Berkeley-default policy.
   Live 2026-08-24; the gain A/B failed on hardware (humanoid-control `0e74ba1`). Predates the
   effort-limit flash, so its contract still has 6.0 Nm knees.

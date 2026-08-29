@@ -402,3 +402,52 @@ validated against it from sim alone.
    velocity, and a **40% lower fall rate** (0.141 vs 0.234 /min) at the same tracked speed. It is
    the best candidate to deploy, but whether it fixes the hardware jitter is **unverified and not
    verifiable from sim**.
+
+
+---
+
+## 11. Hardware result for A-full, and the B-full deployment (2026-08-29)
+
+**A-full was run on the robot. The data was poor and the encoders faulted across the whole leg** —
+worse than the earlier single-joint `ERROR_ENCODER_FAULT` seen with the kp45 baseline.
+
+This is the most important measurement in this document, because A-full was **smoother than that
+baseline on every simulator metric** and the hardware symptom still got worse:
+
+| | action_rate_rms | joint_vel_rms | falls/min | gait Hz | hardware |
+|---|---|---|---|---|---|
+| kp45 baseline | 0.480 | 2.145 | 0.234 | 1.62 | jitter, 1 encoder fault |
+| A-full | 0.357 | 1.840 | 0.141 | 1.56 | **encoders faulted across the whole leg** |
+| **B-full** (deployed) | **0.316** | **1.696** | 0.188 | 1.50 | untested |
+
+Sim-side smoothness is **not** predicting the hardware failure. Two policies now, each smoother
+than the last in simulation, each no better or worse on the robot.
+
+### B-full — now in `deploy/walk`
+
+    run        logs/rsl_rl/biped/2026-08-28_00-09-42_smoothB-full-resumed
+    checkpoint model_5999.pt
+    rewards    HUMANOID_SMOOTH_PRESET=B  -0.1 / -0.005 / -3e-4
+    gains      kp=45.0 / kd=1.5;  knees 11.0 Nm
+    sim        fwd 0.480 m/s, gait 1.50 Hz, knee corr -0.765, 100% envs stepping,
+               action_rate_rms 0.316, joint_vel_rms 1.696, falls 0.188/min
+
+⚠️ Note this run was **resumed from iteration 900** after two machine crashes (source:
+`2026-08-26_11-35-01_smoothB-full-CRASHED-iter900/model_900.pt`), whereas A-full ran continuously.
+The optimizer state was restored and reward resumed at 9.394 vs 10.303 pre-crash, so the effect
+should be small — but it is a real difference between the two runs.
+
+### If B-full also faults the encoders
+
+Then the sim-side smoothness lever is **exhausted** and the cause is not policy smoothness. Three
+runs would have shown monotonically better sim smoothness with no hardware improvement. The next
+place to look is hardware/contract, not reward weights:
+
+- encoder mounting and I2C signal integrity under load (the fault is an *encoder* fault, not a
+  tracking failure);
+- whether raising the knee cap 6 -> 11 Nm removed the accidental filter that was protecting the
+  encoders — the fault first appeared *after* that flash (sec 3);
+- the unresolved **hip_pitch sim<->hardware sign inversion** from
+  `docs/walk-policy-divergence-report.md`, still open;
+- the sim-to-real contract itself, given sim reports a healthy antiphase gait while hardware shows
+  knees in phase at +0.91.
