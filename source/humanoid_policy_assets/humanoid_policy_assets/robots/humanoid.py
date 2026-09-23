@@ -256,7 +256,7 @@ HUMANOID_SQUAT_POSE = {
 # damping on the strongest joint on the robot. That is what the bench says; it is also the joint
 # the 2026-07-14 divergence report flagged for a possible sim<->hardware SIGN inversion, still
 # unresolved. Watch hip_pitch behaviour in the first training run.
-# _CONTRACT_EFFORT is unchanged -- torque caps are firmware limits, not tuning.
+# _CONTRACT_EFFORT is derived per MOTOR TYPE below -- torque caps are firmware limits, not tuning.
 # Gain preset, selectable with HUMANOID_GAIN_PRESET (default "tuned"). Only kp/kd change --
 # the plant (actuator model, armature, friction, latency) and _CONTRACT_EFFORT stay fixed, so a
 # run-to-run comparison isolates the GAINS and nothing else.
@@ -264,7 +264,16 @@ HUMANOID_SQUAT_POSE = {
 #   berkeley 20.0 / 2.0  upstream Berkeley Humanoid Lite defaults, unchanged since the original
 #                        scaffold (commit 31cfd92). Lower stiffness AND higher damping than tuned,
 #                        i.e. markedly better damped -- the A/B for on-robot jitter.
-_GAIN_PRESETS = {"tuned": (45.0, 1.5), "berkeley": (20.0, 2.0)}
+#   tuned_kd3 45.0 / 3.0 same stiffness as tuned, damping doubled. NOT YET RUN -- staged for the
+#                        isolated A/B that follows the measurement round. Motivation: the bench
+#                        gain validation inside configs/actuators/*.json says BOTH motors do best
+#                        at kd=3 (M6C12 7.12 mrad at kp40/kd3 vs 16.84 at kp40/kd1.5 -- the
+#                        deployed setting is the WORST of the six points tested; MAD5010 6.39 vs
+#                        10.67). Smooth B's 15.8 s non-decaying 4.11 Hz ring after a single push
+#                        (humanoid-control REPORT_2026-09-23_smoothB.md sec 1) is an underdamped
+#                        signature. Run this ALONE -- changing gains alongside the reward and
+#                        observation changes makes attribution impossible.
+_GAIN_PRESETS = {"tuned": (45.0, 1.5), "berkeley": (20.0, 2.0), "tuned_kd3": (45.0, 3.0)}
 _GAIN_PRESET = os.environ.get("HUMANOID_GAIN_PRESET", "tuned").strip().lower()
 if _GAIN_PRESET not in _GAIN_PRESETS:
     raise ValueError(
@@ -280,22 +289,83 @@ _LEG_JOINT_NAMES = (
 )
 _CONTRACT_KP = {j: _TUNED_KP for j in _LEG_JOINT_NAMES}
 _CONTRACT_KD = {j: _TUNED_KD for j in _LEG_JOINT_NAMES}
-_CONTRACT_EFFORT = {
-    # Firmware torque caps, flashed and verified 12/12 on hardware 2026-08-24.
-    # Knees raised 6.0 -> 11.0: on the robot they showed a persistent STATIC droop (mean error
-    # -0.136 / -0.198 rad), i.e. ~6.1 / 8.9 Nm of steady demand against a 6.0 cap, saturating
-    # 38.7% / 45.1% of policy steps. Motor ceiling is Kt*I*gear ~= 26.9 Nm and hip_yaw already
-    # runs 12.0 on the identical actuator. Raising it cut the droop 4-8x (-> -0.036 / -0.025).
-    # right_ankle_roll 6.0 -> 7.0 matches the already-7.0 left side.
-    # NOTE: the 6.0 knee cap was acting as an ACCIDENTAL low-pass filter -- with authority
-    # restored the knee follows the policy's 4-5 Hz command, so the explicit smoothness
-    # penalties now have to do work the torque ceiling was doing for free.
-    # See docs/walk-smoothness-sweep.md sec 3.
-    "leg_left_hip_roll_joint": 6.0, "leg_left_hip_yaw_joint": 12.0, "leg_left_hip_pitch_joint": 9.5,
-    "leg_left_knee_pitch_joint": 11.0, "leg_left_ankle_pitch_joint": 6.0, "leg_left_ankle_roll_joint": 7.0,
-    "leg_right_hip_roll_joint": 6.0, "leg_right_hip_yaw_joint": 6.0, "leg_right_hip_pitch_joint": 9.5,
-    "leg_right_knee_pitch_joint": 11.0, "leg_right_ankle_pitch_joint": 6.0, "leg_right_ankle_roll_joint": 7.0,
+##
+# Torque caps are a MOTOR property, not a joint property.
+#
+# The 12 leg joints carry exactly two motor types (confirmed three ways: `torque_constant` in
+# humanoid-studio/configs/humanoid_lite.json, the _LEG_GROUP/_ANKLE_GROUP split below, and the
+# mass audit in configs/actuators/PROVENANCE.md):
+#
+#   MAD M6C12 150KV  x8  hip_roll, hip_yaw, hip_pitch, knee_pitch  (both sides)
+#   MAD 5010  200KV  x4  ankle_pitch, ankle_roll                   (both sides)
+#
+# Physical ceiling of a joint is  Kt * gear * current_limit  -- no firmware torque_limit above
+# that is reachable, because current binds first. Kt and gear come from the bench MotorSpec
+# (humanoid-tuner sim/isaac/motor.py), which is also the source of the friction/inertia/latency
+# models vendored in configs/actuators/. current_limit is a per-motor ESC setting; both specs
+# declare 20 A, so that is the value to flash on every joint of a type.
+#
+#   M6C12   Kt 0.08958 * 15 = 1.3437 Nm/A  -> ceiling 26.87 Nm @ 20 A
+#   MAD5010 Kt 0.06588 * 15 = 0.9882 Nm/A  -> ceiling 19.76 Nm @ 20 A
+#
+# WHY NOT TRAIN AT THE CEILING. The cap has to leave headroom, for two measured reasons:
+#   1. docs/measurements/REPORT_2026-09-23_smoothA.md sec 2 -- knees demand p95 28 Nm on
+#      hardware, ABOVE the 26.87 ceiling. Training at the ceiling would let the policy keep
+#      asking for torque the motor cannot deliver; the cap is what teaches it not to.
+#   2. Raising the knee cap 6.0 -> 11.0 on 2026-08-24 removed what had been an accidental
+#      low-pass filter, and the policy's 4-5 Hz command content reached the joint. Smooth B
+#      then rang at 4.11 Hz for 15.8 s after a single push without decaying
+#      (REPORT_2026-09-23_smoothB.md sec 1). Going to 26.87 removes that limiting entirely.
+#
+# CHOSEN VALUE: the highest cap already in service on that motor type. Nothing on the robot
+# loses authority, nothing gains more than a joint of the same type already runs, and the
+# per-joint spread (four different values across eight identical M6C12s, plus an L/R asymmetric
+# hip_yaw) is gone. Both land at a third to a half of ceiling, which is the headroom.
+##
+_MOTOR_SPECS = {
+    # name:        (Kt Nm/A, gear, current_limit A, effort cap Nm)
+    "M6C12_150KV": (0.08958, 15.0, 20.0, 12.0),
+    "MAD5010_200KV": (0.06588, 15.0, 20.0, 7.0),
 }
+_MOTOR_BY_LEAF = {
+    "hip_roll": "M6C12_150KV", "hip_yaw": "M6C12_150KV",
+    "hip_pitch": "M6C12_150KV", "knee_pitch": "M6C12_150KV",
+    "ankle_pitch": "MAD5010_200KV", "ankle_roll": "MAD5010_200KV",
+}
+
+
+def _motor_of(joint_name: str) -> str:
+    """Motor type driving a leg joint, by leaf token. Raises on an unmapped joint rather than
+    silently defaulting -- an unmapped joint would get a wrong torque cap on real hardware."""
+    for leaf, motor in _MOTOR_BY_LEAF.items():
+        if leaf in joint_name:
+            return motor
+    raise KeyError(f"no motor mapping for joint {joint_name!r}")
+
+
+def _motor_ceiling(motor: str) -> float:
+    """Kt * gear * current_limit -- the most torque this motor can physically produce."""
+    kt, gear, i_limit, _ = _MOTOR_SPECS[motor]
+    return kt * gear * i_limit
+
+
+# Every joint of a type gets its type's cap. Flash the SAME numbers to the ESCs (torque_limit,
+# and current_limit 20.0 on all 12 -- two joints currently run below that and so cannot reach
+# their configured cap: both ankle_roll at 6 A can only make 5.93 Nm against a 7.0 setting, and
+# left_hip_yaw at 10 A only 13.44 Nm. See REPORT_2026-09-23_smoothB.md sec 2a).
+_CONTRACT_EFFORT = {j: _MOTOR_SPECS[_motor_of(j)][3] for j in _LEG_JOINT_NAMES}
+
+for _m, (_kt, _g, _i, _cap) in _MOTOR_SPECS.items():
+    if _cap > _motor_ceiling(_m):
+        raise ValueError(
+            f"{_m}: effort cap {_cap} Nm exceeds physical ceiling "
+            f"{_motor_ceiling(_m):.2f} Nm (Kt {_kt} * gear {_g} * {_i} A)"
+        )
+print("[INFO] motor torque caps: " + ", ".join(
+    f"{_m.split('_')[0]} {_MOTOR_SPECS[_m][3]:.1f} Nm "
+    f"({100 * _MOTOR_SPECS[_m][3] / _motor_ceiling(_m):.0f}% of {_motor_ceiling(_m):.1f} ceiling)"
+    for _m in _MOTOR_SPECS
+))
 
 _LEG_GROUP = ["leg_.*_hip_yaw_joint", "leg_.*_hip_roll_joint", "leg_.*_hip_pitch_joint", "leg_.*_knee_pitch_joint"]
 _ANKLE_GROUP = ["leg_.*_ankle_pitch_joint", "leg_.*_ankle_roll_joint"]

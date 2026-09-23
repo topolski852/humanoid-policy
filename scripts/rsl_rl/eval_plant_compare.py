@@ -68,9 +68,11 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg  # noqa: E40
 from importlib.metadata import version as _pkg_version  # noqa: E402
 
 import humanoid_policy.tasks  # noqa: F401,E402
+from humanoid_policy_assets.actuators.limits import joint_effort_limits  # noqa: E402
 
 
-_KNEE_TRAJ = [] if os.environ.get("EVAL_GAIT") else None
+# EVAL_GAIT=0 / "false" mean OFF; a bare truthiness check enabled them for any non-empty value.
+_KNEE_TRAJ = [] if os.environ.get("EVAL_GAIT", "").strip().lower() not in ("", "0", "false") else None
 _KNEE_IDX = None
 
 
@@ -128,6 +130,20 @@ def main():
     timeouts = torch.zeros((), device=dev)
     prev_action = None
 
+    # Torque saturation, PER JOINT so it lines up with the hardware table in humanoid-control
+    # docs/measurements/REPORT_2026-09-23_smoothA.md sec 2 (knees 52.1% / 33.3% of ticks at cap,
+    # |tau| p95 28.0 Nm). Everything else in this file reduces to a scalar; these deliberately
+    # do not, because "which joint runs out of headroom" is the whole question.
+    #
+    # Measured against computed_torque (the pre-clip PD demand), NOT applied_torque: on the
+    # modeled plant StickSlipDelayedPDActuator rewrites applied_effort as clipped_PD - friction,
+    # so applied_torque there is a net figure that conflates saturation with friction.
+    tau_limit = joint_effort_limits(robot)          # (N, J), from the actuator groups
+    n_joints = robot.data.joint_pos.shape[1]
+    sat_count = torch.zeros(n_joints, device=dev)   # joint-steps at/over the cap
+    tau_peak = torch.zeros(n_joints, device=dev)
+    tau_hist = []                                   # |tau| per measured step, for the p95
+
     obs = env.get_observations()
     total = args_cli.warmup + args_cli.steps
     with torch.inference_mode():
@@ -154,6 +170,10 @@ def main():
                 touts = tm.time_outs
                 falls += (dones & ~touts).sum()
                 timeouts += touts.sum()
+                tau_abs = data.computed_torque.torch.abs()
+                sat_count += (tau_abs >= 0.98 * tau_limit).sum(dim=0).float()
+                tau_peak = torch.maximum(tau_peak, tau_abs.amax(dim=0))
+                tau_hist.append(tau_abs.cpu())
                 n_steps += 1
                 if _KNEE_TRAJ is not None:
                     _KNEE_TRAJ.append(robot.data.joint_pos.torch[:, _KNEE_IDX].clone().cpu())
@@ -179,6 +199,27 @@ def main():
         "timeouts": float(timeouts.item()),
         "fall_rate_per_min": float(falls.item() / env_seconds * 60.0),
         "mean_episode_len_s": float(env_seconds / resets) if resets > 0 else float("inf"),
+    }
+
+    # Per-joint torque headroom. Compare torque_sat_frac directly against the hardware
+    # saturation fractions; if sim shows ~52% at the knees too, the reward is the lever. If sim
+    # shows a few percent while hardware shows 52%, the sim plant is too easy and no reward
+    # change will close that gap.
+    tau_all = torch.cat(tau_hist, dim=0) if tau_hist else torch.zeros((1, n_joints))
+    joint_steps = max(n_steps * N, 1)
+    metrics["torque_sat_frac"] = {
+        name: float(sat_count[j].item() / joint_steps)
+        for j, name in enumerate(robot.data.joint_names)
+    }
+    metrics["torque_p95_nm"] = {
+        name: float(torch.quantile(tau_all[:, j], 0.95).item())
+        for j, name in enumerate(robot.data.joint_names)
+    }
+    metrics["torque_peak_nm"] = {
+        name: float(tau_peak[j].item()) for j, name in enumerate(robot.data.joint_names)
+    }
+    metrics["torque_limit_nm"] = {
+        name: float(tau_limit[0, j].item()) for j, name in enumerate(robot.data.joint_names)
     }
     if _KNEE_TRAJ:
         import numpy as _np

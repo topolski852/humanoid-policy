@@ -48,6 +48,45 @@ _W_ACTION_RATE, _W_ACTION_L2, _W_DOF_VEL = _SMOOTH_PRESETS[_SMOOTH_PRESET]
 print(f"[INFO] walk smoothness preset '{_SMOOTH_PRESET}': "
       f"action_rate_l2={_W_ACTION_RATE} action_l2={_W_ACTION_L2} dof_vel_l2={_W_DOF_VEL}")
 
+# ---------------------------------------------------------------------------------------------
+# Observation model, selectable with HUMANOID_OBS_MODEL (default "measured").
+#
+#   measured  joint_pos/joint_vel carry the MEASURED transport staleness (tau ~ U(0,10 ms)) and
+#             encoder quantisation (1.023e-4 rad), with per-step noise cut to the measured floor.
+#   legacy    the pre-2026-09-23 guessed values: Unoise(+-0.05) rad and Unoise(+-2.0) rad/s, no
+#             staleness, no quantisation. Kept so the change is A/B-able against every bundle
+#             trained before the hardware captures existed.
+#
+# The two are NOT a simple "more noise / less noise" pair. The legacy fixed +-0.05 rad was a
+# stand-in for the PEAK of a velocity-dependent effect; "measured" replaces it with the effect
+# itself. See mdp/observations.py for the derivation and the capture references.
+#
+# Noise scales under "measured":
+#   joint_pos  +-4.3e-5 rad   measured floor, 4.18e-5 / 4.32e-5 on two independent 600 s stands
+#   joint_vel  +-0.05 rad/s   DERIVED, NOT MEASURED -- see below
+#
+# joint_vel's floor was never characterised: the report notes the firmware low-passes velocity
+# (velocity_filter_alpha = 0.7154) before it is visible. Differentiating a 4.2e-5 rad position
+# signal at 100 Hz puts the floor near 0.006 rad/s, so +-0.05 is ~8x above the derived floor and
+# ~40x tighter than legacy -- deliberately conservative pending measurement. It IS measurable
+# from captures already on the robot PC (PDO4 carries velocity in payload bytes 4-7); that is
+# item 1 of the hardware plan. Tighten it here once the number exists.
+#
+# base_ang_vel and projected_gravity keep their guessed scales in BOTH modes: the IMU auto-zeroes
+# its gyro at rest, so B5 could not measure the floor. Do not invent one.
+_OBS_MODELS = ("measured", "legacy")
+_OBS_MODEL = os.environ.get("HUMANOID_OBS_MODEL", "measured").strip().lower()
+if _OBS_MODEL not in _OBS_MODELS:
+    raise ValueError(f"HUMANOID_OBS_MODEL={_OBS_MODEL!r} is not one of {sorted(_OBS_MODELS)}")
+_OBS_MEASURED = _OBS_MODEL == "measured"
+_N_JOINT_POS_NOISE = 4.3e-5 if _OBS_MEASURED else 0.05
+_N_JOINT_VEL_NOISE = 0.05 if _OBS_MEASURED else 2.0
+_OBS_MAX_LAG_S = mdp.MAX_LAG_S if _OBS_MEASURED else 0.0
+_OBS_QUANTUM = mdp.ENCODER_QUANTUM_RAD if _OBS_MEASURED else 0.0
+print(f"[INFO] walk observation model '{_OBS_MODEL}': "
+      f"joint_pos_noise=±{_N_JOINT_POS_NOISE} joint_vel_noise=±{_N_JOINT_VEL_NOISE} "
+      f"max_lag_s={_OBS_MAX_LAG_S} quantum={_OBS_QUANTUM}")
+
 # Spawn the walk policy from the authored `stand` pose (plus the reset randomization below), so it is
 # robust to exactly where the standup policy ends -> clean stand->walk handoff. Falls back to the cfg
 # default standing pose if the pose library is unavailable.
@@ -134,15 +173,26 @@ class ObservationsCfg:
             func=mdp.projected_gravity,
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
+        # joint_pos/joint_vel carry the measured CAN transport staleness and encoder
+        # quantisation (see mdp/observations.py and the HUMANOID_OBS_MODEL block above).
+        # Under HUMANOID_OBS_MODEL=legacy these collapse to the old plain joint_pos_rel /
+        # joint_vel_rel behaviour, because max_lag_s and quantum both become 0.
         joint_pos = ObsTerm(
-            func=mdp.joint_pos_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True)},
-            noise=Unoise(n_min=-0.05, n_max=0.05),
+            func=mdp.joint_pos_rel_stale,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True),
+                "max_lag_s": _OBS_MAX_LAG_S,
+                "quantum": _OBS_QUANTUM,
+            },
+            noise=Unoise(n_min=-_N_JOINT_POS_NOISE, n_max=_N_JOINT_POS_NOISE),
         )
         joint_vel = ObsTerm(
-            func=mdp.joint_vel_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True)},
-            noise=Unoise(n_min=-2.0, n_max=2.0),
+            func=mdp.joint_vel_rel_stale,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True),
+                "max_lag_s": _OBS_MAX_LAG_S,
+            },
+            noise=Unoise(n_min=-_N_JOINT_VEL_NOISE, n_max=_N_JOINT_VEL_NOISE),
         )
         actions = ObsTerm(func=mdp.last_action)
 
@@ -153,6 +203,25 @@ class ObservationsCfg:
     class CriticCfg(PolicyCfg):
         """Observations for critic group."""
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+
+        # The critic is privileged and must NOT inherit the actor's sensing defects.
+        # enable_corruption=False already suppresses the noise, but staleness and quantisation
+        # live inside the observation function, so they have to be switched off explicitly.
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel_stale,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True),
+                "max_lag_s": 0.0,
+                "quantum": 0.0,
+            },
+        )
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel_stale,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True),
+                "max_lag_s": 0.0,
+            },
+        )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -252,6 +321,37 @@ class RewardsCfg:
         func=mdp.joint_torques_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-0.001783,
+    )
+    # Torque demanded BEYOND the actuator cap, in N·m. Measured motivation: the knees sit at or
+    # over their limit on 52.1% / 33.3% of policy ticks on hardware, demanding p95 28 N·m -- over
+    # even the motor's physical ceiling (humanoid-control REPORT_2026-09-23_smoothA.md sec 2).
+    # Raising the cap fixed the static droop and not the dynamic demand, so the remaining lever
+    # is training. Distinct from dof_torques_l2, which prices torque MAGNITUDE everywhere and is
+    # dominated by ordinary operation; this one is silent until the joint runs out of headroom.
+    # Starting weight -0.02. Tune against torque_sat_frac from scripts/rsl_rl/eval_plant_compare.py
+    # rather than by eye.
+    #
+    # READ THIS BEFORE EXPECTING IT TO FIX THE KNEES. Replaying the smoothA-full bundle on the
+    # modeled plant (2026-09-23, --num_envs 128 --steps 600 --cmd_vx 0.3) shows the sim does NOT
+    # reproduce the hardware knee demand at all:
+    #
+    #     joint              sim sat    hw sat    sim p95   hw p95
+    #     left_knee_pitch      0.16%     52.1%      6.6      28.0
+    #     right_knee_pitch     0.17%     33.3%      7.1      23.1
+    #     left_ankle_pitch    27.58%       n/a     15.3       n/a
+    #     right_ankle_pitch   21.57%       n/a     14.0       n/a
+    #
+    # So in sim this term acts on the ANKLES, not the knees -- there is essentially no knee
+    # overshoot to price. The knee gap is a PLANT gap (the simulated knee tracks its target; the
+    # real one sits 0.208 rad behind, and that error is what produces the 28 N·m reconstructed
+    # demand), and no reward weight closes it. Ankle saturation at 22-28% is a genuine problem in
+    # its own right and worth penalizing, but do not read a drop in it as progress on the knees.
+    # The measurement that can explain the knee discrepancy is M7 (commanded vs reported torque
+    # under static load) -- see humanoid-control docs/HARDWARE_PLAN_2026-09-23.md.
+    dof_torque_saturation = RewTerm(
+        func=mdp.joint_torque_saturation,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
+        weight=-0.02,
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,

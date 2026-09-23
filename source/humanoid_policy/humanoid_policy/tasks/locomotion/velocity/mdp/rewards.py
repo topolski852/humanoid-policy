@@ -7,8 +7,43 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
+from humanoid_policy_assets.actuators.limits import joint_effort_limits
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def joint_torque_saturation(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize torque DEMANDED beyond what the actuator can deliver (N·m, summed over joints).
+
+    Measured motivation: on hardware the knees demand p95 28 N·m and sit at or over their cap
+    on 52.1% / 33.3% of policy ticks (humanoid-control
+    ``docs/measurements/REPORT_2026-09-23_smoothA.md`` sec 2). Raising the cap 6.0 -> 11.0 fixed
+    the STATIC droop and did nothing for the dynamic demand, which is above even the motor's
+    physical ceiling -- so this stopped being a limit-configuration problem and became a gait
+    problem, i.e. training-side. This term is the direct lever: it prices the overshoot itself.
+
+    Deliberately NOT ``isaaclab.envs.mdp.applied_torque_limits``, which computes
+    ``|applied_torque - computed_torque|``. That identity only isolates the clip on a stock
+    actuator. :class:`StickSlipDelayedPDActuator` overwrites ``applied_effort`` with
+    ``clipped_PD - friction``, so the stock term would report clip-deficit PLUS friction -- a
+    roughly 4.3 N·m floor across the 12 legs that is present whether or not anything saturates,
+    swamping the signal we actually want.
+
+    ``computed_torque`` is the pre-clip PD output, so ``relu(|tau| - limit)`` is exactly the
+    unmet demand. It is zero whenever the joint is inside its limit, which keeps the term silent
+    on a policy that already has headroom.
+
+    Complements rather than replaces ``dof_torques_l2``: that penalizes torque MAGNITUDE
+    everywhere and is dominated by the bulk of normal operation, this one is scoped to the peaks
+    that touch the ceiling.
+    """
+    asset = env.scene[asset_cfg.name]
+    tau = asset.data.computed_torque.torch[:, asset_cfg.joint_ids]
+    limit = joint_effort_limits(asset)[:, asset_cfg.joint_ids]
+    return torch.sum(torch.relu(tau.abs() - limit), dim=1)
 
 
 def base_lin_accel_xy_l2(
