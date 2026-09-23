@@ -58,6 +58,12 @@ from datetime import datetime
 
 from rsl_rl.runners import OnPolicyRunner
 
+import duration_clock  # isort: skip
+
+# Make the console "Time elapsed:" / "ETA:" survive past 24 h -- rsl-rl formats both with
+# gmtime(), so the hour field silently rolls over to 00 on a long full-profile run.
+duration_clock.install()
+
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
