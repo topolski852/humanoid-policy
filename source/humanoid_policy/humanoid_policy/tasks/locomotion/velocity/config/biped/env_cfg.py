@@ -393,17 +393,34 @@ class RewardsCfg:
         weight=-0.02,
     )
     # HARDWARE SAFETY, not smoothness. The ESC loses encoder tracking near 13 rad/s and floods
-    # the CAN bus until it drops -- measA-full did exactly that at 41 s. smoothA, the best bundle
-    # on hardware, never exceeded 1.08 rad/s standing (p99 0.73), so a hinge at 2.0 costs a
-    # well-behaved policy nothing. measA's p99 was 5.09 and it peaked at 15.49.
-    # Paired with the joint_vel_fault termination below; the wide band between 2 and 10 rad/s is
-    # deliberate so gait is shaped rather than forbidden.
-    # Tune against torque-free evidence: joint_vel_p99 from scripts/rsl_rl/eval_plant_compare.py
-    # (hardware target < 1.5 rad/s), not by eye.
+    # the CAN bus until it drops -- measA-full did exactly that at 41 s.
+    #
+    # THRESHOLD 2.0 -> 8.0 (2026-09-25). The first version cited "smoothA never exceeded
+    # 1.08 rad/s", which is smoothA's STANDING figure; the hardware plan's section 3b made the
+    # same conflation. smoothA's own WALK capture
+    # (humanoid-control walk_20260923T104636_smoothA-walk1_M2M3M6.json) says otherwise:
+    #
+    #     smoothA standing   max 1.08 rad/s
+    #     smoothA WALKING    median per-joint max 6.90, peaks 7.1-8.8 rad/s
+    #
+    # So the best bundle on hardware routinely reaches 7-9 rad/s while walking, and a hinge at
+    # 2.0 penalised its normal gait continuously. measB-fast, trained that way, came out a
+    # shuffle: knee swing 0.391 rad against smoothA's 0.849, knee correlation -0.158 against
+    # -0.655, forward speed 0.209 on a 0.3 command -- while its safety numbers were the best of
+    # any bundle (joint_vel p99 0.77, max 9.13). The constraint worked and cost the gait.
+    #
+    # 8.0 sits above smoothA's normal walking range and 5 rad/s below the observed fault, so it
+    # fires on genuinely dangerous excursions rather than on locomotion. The weight is raised to
+    # match: above 8 rad/s is a hardware-fault trajectory, not an inefficiency.
+    # (Note smoothA itself peaks at 14.98 rad/s in sim -- past the 13.02 fault. It is not safe
+    # either; it has just not been unlucky yet. That is what this term exists to prevent.)
+    #
+    # Tune against joint_vel_p99_rad_s / joint_vel_over_10_frac from
+    # scripts/rsl_rl/eval_plant_compare.py, not by eye.
     dof_vel_excess = RewTerm(
         func=mdp.joint_vel_excess,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS), "max_vel": 2.0},
-        weight=-0.25,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS), "max_vel": 8.0},
+        weight=-0.5,
     )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,

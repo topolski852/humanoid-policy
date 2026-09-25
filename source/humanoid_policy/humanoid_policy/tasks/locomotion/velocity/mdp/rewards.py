@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def joint_vel_excess(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    max_vel: float = 2.0,
+    max_vel: float = 8.0,
 ) -> torch.Tensor:
     """Penalize joint speed above ``max_vel`` (rad/s, summed over joints).
 
@@ -27,10 +27,12 @@ def joint_vel_excess(
     and took ``can_right_leg`` down with 51,484 EMCY frames in 5.5 s (humanoid-control
     ``docs/measurements/REPORT_2026-09-25_measA.md`` section 1).
 
-    Threshold rationale: smoothA, the best-behaved bundle on hardware, never exceeded
-    **1.08 rad/s** while standing, and its p99 was 0.73. measA's p99 alone was 5.09. A hinge at
-    2.0 rad/s is therefore free for a policy that behaves like smoothA and expensive for one
-    heading toward the fault.
+    Threshold rationale: smoothA, the best-behaved bundle on hardware, reaches a median
+    per-joint max of **6.90 rad/s while WALKING** (peaks 7.1-8.8), against only 1.08 rad/s while
+    standing. An earlier version of this term used the standing figure and hinged at 2.0, which
+    penalised normal gait continuously and produced a shuffle. 8.0 rad/s sits above smoothA's
+    walking range and 5 rad/s below the observed fault, so it prices hardware-fault trajectories
+    rather than locomotion. See the note on ``dof_vel_excess`` in the biped ``RewardsCfg``.
 
     Deliberately NOT ``isaaclab.envs.mdp.joint_vel_limits``, which measures against
     ``soft_joint_vel_limits`` -- an articulation field fed by ``velocity_limit_sim``, which this
