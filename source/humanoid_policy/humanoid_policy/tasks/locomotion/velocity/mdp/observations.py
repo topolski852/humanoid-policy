@@ -50,6 +50,13 @@ ENCODER_QUANTUM_RAD = 1.023e-4
 # shaping is warranted.
 MAX_LAG_S = 0.010
 
+# Velocity is older than position by the firmware's velocity EMA, which the sim has no other
+# model for. ``velocity_filter_alpha = 0.7154`` at the 100 Hz feed
+# (humanoid-esc-firmware Core/Src/encoder.c) is a time constant of
+# -dt / ln(1 - alpha) = -0.01 / ln(0.2846) ~= 8 ms, on top of the 10 ms transport delay.
+# Derived from a firmware constant, not measured on the robot.
+MAX_LAG_S_VEL = 0.018
+
 
 def _lag(env: ManagerBasedRLEnv, max_lag_s: float) -> torch.Tensor:
     """Per-env sample age for this step, shape ``(num_envs, 1)``.
@@ -87,7 +94,7 @@ def joint_pos_rel_stale(
 def joint_vel_rel_stale(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    max_lag_s: float = MAX_LAG_S,
+    max_lag_s: float = MAX_LAG_S_VEL,
 ) -> torch.Tensor:
     """``joint_vel_rel`` carrying the same transport staleness: ``vel(t-tau) ~= vel - tau*acc``.
 

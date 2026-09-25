@@ -13,6 +13,36 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def joint_vel_excess(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    max_vel: float = 2.0,
+) -> torch.Tensor:
+    """Penalize joint speed above ``max_vel`` (rad/s, summed over joints).
+
+    This is a HARDWARE SAFETY constraint, not a smoothness preference. The ESC cannot track its
+    encoder much above ~13 rad/s at the joint: it raises ``ERROR_ENCODER_FAULT`` (0x2000) and
+    then floods EMCY until the bus drops and needs a power cycle. The measA-full bundle did
+    exactly that 41 s into its first run -- ``right_knee_pitch`` ramped 1.7 -> 5.8 -> 13.0 rad/s
+    and took ``can_right_leg`` down with 51,484 EMCY frames in 5.5 s (humanoid-control
+    ``docs/measurements/REPORT_2026-09-25_measA.md`` section 1).
+
+    Threshold rationale: smoothA, the best-behaved bundle on hardware, never exceeded
+    **1.08 rad/s** while standing, and its p99 was 0.73. measA's p99 alone was 5.09. A hinge at
+    2.0 rad/s is therefore free for a policy that behaves like smoothA and expensive for one
+    heading toward the fault.
+
+    Deliberately NOT ``isaaclab.envs.mdp.joint_vel_limits``, which measures against
+    ``soft_joint_vel_limits`` -- an articulation field fed by ``velocity_limit_sim``, which this
+    robot's explicit actuators never set. The limit that matters is a property of the ESC
+    firmware, so it belongs in the config as an explicit number rather than being inherited from
+    a solver field. Paired with a termination at a higher ceiling; see ``TerminationsCfg``.
+    """
+    asset = env.scene[asset_cfg.name]
+    vel = asset.data.joint_vel.torch[:, asset_cfg.joint_ids]
+    return torch.sum(torch.relu(vel.abs() - max_vel), dim=1)
+
+
 def joint_torque_saturation(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

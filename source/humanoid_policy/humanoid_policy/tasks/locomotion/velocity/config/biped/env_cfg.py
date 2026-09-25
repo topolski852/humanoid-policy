@@ -51,26 +51,46 @@ print(f"[INFO] walk smoothness preset '{_SMOOTH_PRESET}': "
 # ---------------------------------------------------------------------------------------------
 # Observation model, selectable with HUMANOID_OBS_MODEL (default "measured").
 #
-#   measured  joint_pos/joint_vel carry the MEASURED transport staleness (tau ~ U(0,10 ms)) and
-#             encoder quantisation (1.023e-4 rad), with per-step noise cut to the measured floor.
+#   measured  the measured MECHANISMS (transport staleness, encoder quantisation) on top of an
+#             explicit uncertainty budget -- see the budget below.
 #   legacy    the pre-2026-09-23 guessed values: Unoise(+-0.05) rad and Unoise(+-2.0) rad/s, no
-#             staleness, no quantisation. Kept so the change is A/B-able against every bundle
-#             trained before the hardware captures existed.
+#             staleness, no quantisation. What smoothA -- still the best bundle on hardware --
+#             trained on. Kept so the change stays A/B-able.
 #
-# The two are NOT a simple "more noise / less noise" pair. The legacy fixed +-0.05 rad was a
-# stand-in for the PEAK of a velocity-dependent effect; "measured" replaces it with the effect
-# itself. See mdp/observations.py for the derivation and the capture references.
+# ### WHY THE NOISE WENT BACK UP (2026-09-25)
 #
-# Noise scales under "measured":
-#   joint_pos  +-4.3e-5 rad   measured floor, 4.18e-5 / 4.32e-5 on two independent 600 s stands
-#   joint_vel  +-0.05 rad/s   DERIVED, NOT MEASURED -- see below
+# measA-full was the first bundle trained on the measured floors, and it REGRESSED badly on
+# hardware: tilt rate 20.6 deg/s against smoothA's 0.4 (50x), joint_vel p99 5.09 against 0.73,
+# and an ESC encoder fault at 41 s that took a CAN bus down. Operator ranking is
+# smoothA > smoothB > measA. See humanoid-control docs/measurements/REPORT_2026-09-25_measA.md.
 #
-# joint_vel's floor was never characterised: the report notes the firmware low-passes velocity
-# (velocity_filter_alpha = 0.7154) before it is visible. Differentiating a 4.2e-5 rad position
-# signal at 100 Hz puts the floor near 0.006 rad/s, so +-0.05 is ~8x above the derived floor and
-# ~40x tighter than legacy -- deliberately conservative pending measurement. It IS measurable
-# from captures already on the robot PC (PDO4 carries velocity in payload bytes 4-7); that is
-# item 1 of the hardware plan. Tighten it here once the number exists.
+# The mechanism is that staleness robustness is PROPORTIONAL TO JOINT VELOCITY (obs = pos - tau*vel),
+# and balancing happens at almost zero velocity. Using smoothA's measured standing figures
+# (joint vel p95 0.06 rad/s, tau mean 4.88 ms) the whole budget in the standing regime was:
+#
+#     staleness tau*v  2.9e-4      quantisation 1.0e-4      sensor floor 4.3e-5
+#     total          ~4.4e-4 rad   vs smoothA's flat 5.0e-2 rad  ->  ~114x LESS
+#
+# And the calibration offset measured on 2026-09-25 is +-0.029 rad -- SIXTY-SIX TIMES larger than
+# the uncertainty measA was trained to tolerate. The policy learned to trust its encoders to a
+# precision the robot cannot deliver, so a ~1.4 deg stance error reads as a large state error and
+# it reacts hard. That is exactly the reported behaviour: it lurches rather than drifts.
+#
+# The measured floors are a LOWER BOUND on what to randomise, not the value to use. The fix is to
+# keep the measured mechanisms and restore a velocity-INDEPENDENT margin for the plant error that
+# is real but unmodelled (calibration drift, the unresolved 4x knee load path, backlash, link
+# flex, IMU mounting error, ground irregularity).
+#
+# ### THE BUDGET -- keep these separate so the next regression is attributable
+#
+#   joint_pos = sensor floor 4.3e-5  +  plant margin 0.05   (measured + deliberate)
+#   joint_vel = sensor floor 0.049   +  plant margin 2.0    (measured + deliberate)
+#
+# The margins are set to smoothA's values on purpose: it is the known-good bundle, so this is the
+# minimal delta from something that works. If the next run behaves, the noise was the cause; if it
+# still fails, the cause is the torque caps or the saturation reward, which measA changed too.
+# Shrink the margins only once M7 and the encoder-drift test have accounted for the plant error
+# they stand in for.
 #
 # base_ang_vel and projected_gravity keep their guessed scales in BOTH modes: the IMU auto-zeroes
 # its gyro at rest, so B5 could not measure the floor. Do not invent one.
@@ -79,13 +99,26 @@ _OBS_MODEL = os.environ.get("HUMANOID_OBS_MODEL", "measured").strip().lower()
 if _OBS_MODEL not in _OBS_MODELS:
     raise ValueError(f"HUMANOID_OBS_MODEL={_OBS_MODEL!r} is not one of {sorted(_OBS_MODELS)}")
 _OBS_MEASURED = _OBS_MODEL == "measured"
-_N_JOINT_POS_NOISE = 4.3e-5 if _OBS_MEASURED else 0.05
-_N_JOINT_VEL_NOISE = 0.05 if _OBS_MEASURED else 2.0
+
+# Measured sensor floors (humanoid-control docs/measurements/TRAINING_INPUT.json).
+_SENSOR_FLOOR_POS = 4.3e-5   # rad; 4.18e-5 / 4.32e-5 on two independent 600 s stands
+_SENSOR_FLOOR_VEL = 0.049    # rad/s; median-of-window std on the filtered signal, max across joints
+# Deliberate margin for measured-but-unmodelled and unmeasured plant error. NOT a sensor claim.
+_PLANT_MARGIN_POS = 0.05     # rad/s ... rad; smoothA's value
+_PLANT_MARGIN_VEL = 2.0      # rad/s; smoothA's value
+
+_N_JOINT_POS_NOISE = (_SENSOR_FLOOR_POS + _PLANT_MARGIN_POS) if _OBS_MEASURED else 0.05
+_N_JOINT_VEL_NOISE = (_SENSOR_FLOOR_VEL + _PLANT_MARGIN_VEL) if _OBS_MEASURED else 2.0
 _OBS_MAX_LAG_S = mdp.MAX_LAG_S if _OBS_MEASURED else 0.0
+# Velocity carries the transport delay PLUS the firmware's velocity EMA
+# (velocity_filter_alpha = 0.7154 at 100 Hz -> tau_f ~ 8 ms), which the sim does not otherwise
+# model. Dominated by the margin above at present; it starts to matter once that margin shrinks.
+_OBS_MAX_LAG_S_VEL = mdp.MAX_LAG_S_VEL if _OBS_MEASURED else 0.0
 _OBS_QUANTUM = mdp.ENCODER_QUANTUM_RAD if _OBS_MEASURED else 0.0
 print(f"[INFO] walk observation model '{_OBS_MODEL}': "
-      f"joint_pos_noise=±{_N_JOINT_POS_NOISE} joint_vel_noise=±{_N_JOINT_VEL_NOISE} "
-      f"max_lag_s={_OBS_MAX_LAG_S} quantum={_OBS_QUANTUM}")
+      f"joint_pos_noise=±{_N_JOINT_POS_NOISE:.5g} (floor {_SENSOR_FLOOR_POS:g} + margin {_PLANT_MARGIN_POS:g}) "
+      f"joint_vel_noise=±{_N_JOINT_VEL_NOISE:.5g} (floor {_SENSOR_FLOOR_VEL:g} + margin {_PLANT_MARGIN_VEL:g}) "
+      f"lag_pos={_OBS_MAX_LAG_S}s lag_vel={_OBS_MAX_LAG_S_VEL}s quantum={_OBS_QUANTUM:g}")
 
 # Spawn the walk policy from the authored `stand` pose (plus the reset randomization below), so it is
 # robust to exactly where the standup policy ends -> clean stand->walk handoff. Falls back to the cfg
@@ -138,7 +171,13 @@ class CommandsCfg:
         asset_name="robot",
         heading_command=True,
         heading_control_stiffness=0.5,
-        rel_standing_envs=0.02,
+        # 0.02 -> 0.30 on 2026-09-25. Standing unattended is the nearer milestone than walking:
+        # NO policy to date has walked without the operator's hand on the robot, so every gait
+        # figure in every report describes a SUPPORTED walk, while smoothA does stand alone for
+        # 10 minutes and measA cannot stand at all (humanoid-control
+        # docs/measurements/REPORT_2026-09-25_measA.md section 4). At 2% the policy had almost no
+        # practice at the thing it is actually judged on. 0.30 matches Asimov's setting.
+        rel_standing_envs=0.30,
         rel_heading_envs=1.0,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
             # Harder command envelope (balanced) so the full-profile policy is robust across
@@ -190,7 +229,7 @@ class ObservationsCfg:
             func=mdp.joint_vel_rel_stale,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS, preserve_order=True),
-                "max_lag_s": _OBS_MAX_LAG_S,
+                "max_lag_s": _OBS_MAX_LAG_S_VEL,
             },
             noise=Unoise(n_min=-_N_JOINT_VEL_NOISE, n_max=_N_JOINT_VEL_NOISE),
         )
@@ -353,6 +392,19 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
         weight=-0.02,
     )
+    # HARDWARE SAFETY, not smoothness. The ESC loses encoder tracking near 13 rad/s and floods
+    # the CAN bus until it drops -- measA-full did exactly that at 41 s. smoothA, the best bundle
+    # on hardware, never exceeded 1.08 rad/s standing (p99 0.73), so a hinge at 2.0 costs a
+    # well-behaved policy nothing. measA's p99 was 5.09 and it peaked at 15.49.
+    # Paired with the joint_vel_fault termination below; the wide band between 2 and 10 rad/s is
+    # deliberate so gait is shaped rather than forbidden.
+    # Tune against torque-free evidence: joint_vel_p99 from scripts/rsl_rl/eval_plant_compare.py
+    # (hardware target < 1.5 rad/s), not by eye.
+    dof_vel_excess = RewTerm(
+        func=mdp.joint_vel_excess,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS), "max_vel": 2.0},
+        weight=-0.25,
+    )
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS)},
@@ -425,6 +477,40 @@ class TerminationsCfg:
         func=mdp.root_height_below_minimum,
         params={"minimum_height": _MIN_BASE_HEIGHT, "asset_cfg": SceneEntityCfg("robot", body_names="base")},
     )
+    # A joint past 10 rad/s is a HARDWARE FAULT on this robot: the ESC loses encoder tracking
+    # near 13 rad/s, raises ERROR_ENCODER_FAULT (0x2000) and floods EMCY until the CAN bus drops
+    # and needs a power cycle. measA-full ended that way 41 s into its first run.
+    #
+    # OFF BY DEFAULT -- it destroys training. Measured 2026-09-25 at 1024 envs, 250 iterations:
+    #
+    #     iter    vel_fault    ep_len    reward
+    #        0      0.642        10.1     -3.03
+    #       30      0.999         1.7     -1.08
+    #      150      1.000         1.1     -0.58
+    #
+    # 100% of episodes terminate at ~1.2 steps and the policy never gets a locomotion gradient.
+    # The cause is NOT the reset transient -- stepping with zero actions peaks at 8.03 rad/s and
+    # never crosses 10 (0.00% of joint-steps). It is that an UNTRAINED policy (action std 1.0,
+    # scale 0.25, kp 45) genuinely commands >10 rad/s on almost every step, so the constraint
+    # fires before there is any behaviour to shape. A hard termination on a condition a random
+    # policy violates constantly is a learning dead end, whatever the threshold.
+    #
+    # The hinge penalty ``dof_vel_excess`` carries the constraint instead: it is ~2500x stronger
+    # than the ``dof_vel_l2`` measA trained under, and it shapes rather than forbids. The gate
+    # before deploying is the MEASURED one -- ``joint_vel_p99_rad_s`` and
+    # ``joint_vel_over_10_frac`` from scripts/rsl_rl/eval_plant_compare.py (hardware target
+    # p99 < 1.5 rad/s). If a bundle clears that in sim, this termination would never have fired.
+    #
+    # Set HUMANOID_VEL_TERMINATION=1 to enable, e.g. to fine-tune an already-competent policy
+    # where the dead-end failure above does not apply.
+    if os.environ.get("HUMANOID_VEL_TERMINATION", "0") not in ("0", "false", "False"):
+        joint_vel_fault = DoneTerm(
+            func=mdp.joint_vel_out_of_manual_limit,
+            params={
+                "max_velocity": 10.0,
+                "asset_cfg": SceneEntityCfg("robot", joint_names=HUMANOID_LEG_JOINTS),
+            },
+        )
 
 
 @configclass

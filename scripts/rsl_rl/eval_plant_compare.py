@@ -144,6 +144,16 @@ def main():
     tau_peak = torch.zeros(n_joints, device=dev)
     tau_hist = []                                   # |tau| per measured step, for the p95
 
+    # The two hardware discriminators, so a bundle can be screened in sim before it costs a robot
+    # session. Both come from humanoid-control docs/measurements/REPORT_2026-09-25_measA.md:
+    #   tilt rate  separated smoothA (0.4 deg/s) from measA (20.6) where tilt MAGNITUDE did not,
+    #              and matched the operator's ranking. Hardware target p95 < 1.0 deg/s.
+    #   joint vel  is a hard ESC limit -- encoder fault near 13 rad/s. Target p99 < 1.5 rad/s.
+    # Buffered rather than accumulated because both targets are tail statistics, not means, and
+    # an rms hides exactly the excursions that matter.
+    tilt_hist = []                                  # |omega_xy| per measured step (rad/s)
+    jvel_hist = []                                  # |joint_vel| per measured step (rad/s)
+
     obs = env.get_observations()
     total = args_cli.warmup + args_cli.steps
     with torch.inference_mode():
@@ -174,6 +184,8 @@ def main():
                 sat_count += (tau_abs >= 0.98 * tau_limit).sum(dim=0).float()
                 tau_peak = torch.maximum(tau_peak, tau_abs.amax(dim=0))
                 tau_hist.append(tau_abs.cpu())
+                tilt_hist.append(rock.norm(dim=1).cpu())   # |omega_xy| per env
+                jvel_hist.append(jvel.abs().cpu())
                 n_steps += 1
                 if _KNEE_TRAJ is not None:
                     _KNEE_TRAJ.append(robot.data.joint_pos.torch[:, _KNEE_IDX].clone().cpu())
@@ -221,6 +233,26 @@ def main():
     metrics["torque_limit_nm"] = {
         name: float(tau_limit[0, j].item()) for j, name in enumerate(robot.data.joint_names)
     }
+
+    # Hardware-comparable balance + safety tails. Compare directly against the hardware table in
+    # REPORT_2026-09-25_measA.md; these are the numbers that ranked the bundles correctly when
+    # fall_rate/min did not (sim ranked measA best on falls and it is the worst on the robot).
+    if tilt_hist:
+        tilt = torch.cat(tilt_hist) * 180.0 / 3.141592653589793   # rad/s -> deg/s
+        metrics["tilt_rate_p95_deg_s"] = float(torch.quantile(tilt, 0.95).item())
+        metrics["tilt_rate_max_deg_s"] = float(tilt.max().item())
+    if jvel_hist:
+        jv = torch.cat(jvel_hist)                                 # (steps*envs, J)
+        flat = jv.flatten()
+        metrics["joint_vel_p99_rad_s"] = float(torch.quantile(flat, 0.99).item())
+        metrics["joint_vel_max_rad_s"] = float(flat.max().item())
+        metrics["joint_vel_p99_per_joint"] = {
+            name: float(torch.quantile(jv[:, j], 0.99).item())
+            for j, name in enumerate(robot.data.joint_names)
+        }
+        # Fraction of joint-steps past the reward hinge (2.0) and the termination ceiling (10.0).
+        metrics["joint_vel_over_2_frac"] = float((flat > 2.0).float().mean().item())
+        metrics["joint_vel_over_10_frac"] = float((flat > 10.0).float().mean().item())
     if _KNEE_TRAJ:
         import numpy as _np
         tr = torch.stack(_KNEE_TRAJ).numpy()          # (T, N, 2) left/right knee
