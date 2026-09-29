@@ -46,6 +46,18 @@ parser.add_argument("--out", type=str, default=None, help="write metrics JSON he
 parser.add_argument("--foot_friction", type=float, default=None,
                     help="fix robot-body static+dynamic friction (terrain is 1.0, combine=multiply, "
                          "so this IS the foot-ground coefficient). Default: training DR (0.4-1.2).")
+parser.add_argument("--foot_dyn_friction", type=float, default=None,
+                    help="fix robot-body DYNAMIC friction separately (with --foot_friction as static). "
+                         "Models a floor whose kinetic friction sits below its static friction.")
+parser.add_argument("--floor_stiffness", type=float, default=None,
+                    help="PhysX compliant-contact spring stiffness on the ground plane (N/m per contact). "
+                         "Models a soft floor such as a rug; sim's default ground is rigid.")
+parser.add_argument("--floor_damping", type=float, default=None,
+                    help="PhysX compliant-contact damping on the ground plane (N*s/m); needs --floor_stiffness.")
+parser.add_argument("--sag_effort_scale", type=float, default=None,
+                    help="scale the DELIVERED torque cap on hip_pitch/knee_pitch only. Models a joint that "
+                         "delivers less torque under gait than commanded. Stalls are still scored against "
+                         "the contract cap, the way the hardware reconstruction scores them.")
 parser.add_argument("--sag_viscous_scale", type=float, default=None,
                     help="scale stick-slip viscous friction on hip_pitch and knee_pitch only.")
 parser.add_argument("--base_force_x", type=float, default=None,
@@ -94,6 +106,54 @@ _FOOT_Z = [] if _KNEE_TRAJ is not None else None
 _FOOT_IDX = None
 
 
+def _stall_and_posture(tau_hist, jvel_hist, tau_limit, height_hist, pitch_hist, names, dt):
+    """Stall fraction defined IDENTICALLY to humanoid-control scripts/measure/gait_contact.py
+    (REPORT_2026-09-29_contact_B_C.md): a stall is the SAME hip_pitch or knee_pitch joint at
+    >= 0.98 * cap for >= 0.3 s, or both knees under 0.5 rad/s for >= 0.3 s. Runs are found per
+    joint and then combined -- OR-ing joints tick by tick first chains normal left/right stance
+    saturation into fake multi-second stalls. Hardware: measC-full 17% of walking, smoothA 36%.
+    """
+    import numpy as _np
+    out = {}
+    tau = torch.stack(tau_hist).numpy()                 # (T, N, J)
+    lim = tau_limit[0].cpu().numpy()                    # (J,)
+    jv = torch.stack(jvel_hist).numpy()                 # (T, N, J)
+    T, N, _ = tau.shape
+    min_run = max(1, int(round(0.3 / dt)))
+    sag = [i for i, n in enumerate(names) if n.endswith("hip_pitch_joint") or n.endswith("knee_pitch_joint")]
+    knees = [i for i, n in enumerate(names) if n.endswith("knee_pitch_joint")]
+
+    def runs(mask_1d):                                  # bool (T,) -> covered bool (T,) of runs >= min_run
+        cov = _np.zeros_like(mask_1d)
+        edges = _np.diff(_np.concatenate(([0], mask_1d.astype(_np.int8), [0])))
+        for a, b in zip(_np.flatnonzero(edges == 1), _np.flatnonzero(edges == -1)):
+            if b - a >= min_run:
+                cov[a:b] = True
+        return cov
+
+    covered, n_stalls = 0, 0
+    per_joint = {names[j]: 0 for j in sag}
+    for e in range(N):
+        union = _np.zeros(T, dtype=bool)
+        for j in sag:
+            r = runs(tau[:, e, j] >= 0.98 * lim[j])
+            per_joint[names[j]] += int(r.sum())
+            union |= r
+        union |= runs(_np.all(jv[:, e, :][:, knees] < 0.5, axis=1))
+        covered += int(union.sum())
+        n_stalls += int(_np.sum(_np.diff(_np.concatenate(([0], union.astype(_np.int8)))) == 1))
+    out["stall_fraction"] = covered / float(T * N)
+    out["stalls_per_min"] = n_stalls / (T * N * dt / 60.0)
+    out["stall_time_frac_per_joint"] = {k: v / float(T * N) for k, v in per_joint.items()}
+    if height_hist:
+        out["base_height_mean_m"] = float(torch.stack(height_hist).mean().item())
+    if pitch_hist:
+        p = torch.stack(pitch_hist) * 180.0 / 3.141592653589793
+        out["torso_pitch_mean_deg"] = float(p.mean().item())
+        out["torso_pitch_p95_deg"] = float(torch.quantile(p.flatten(), 0.95).item())
+    return out
+
+
 def main():
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
@@ -113,6 +173,16 @@ def main():
         p["static_friction_range"] = (f, f)
         p["dynamic_friction_range"] = (f, f)
         overrides["foot_friction"] = f
+    if args_cli.foot_dyn_friction is not None:
+        fd = float(args_cli.foot_dyn_friction)
+        env_cfg.events.physics_material.params["dynamic_friction_range"] = (fd, fd)
+        overrides["foot_dyn_friction"] = fd
+    if args_cli.floor_stiffness is not None:
+        mat = env_cfg.scene.terrain.physics_material
+        mat.compliant_contact_stiffness = float(args_cli.floor_stiffness)
+        mat.compliant_contact_damping = float(args_cli.floor_damping or 0.0)
+        overrides["floor_stiffness"] = mat.compliant_contact_stiffness
+        overrides["floor_damping"] = mat.compliant_contact_damping
     # hip_pitch / knee_pitch are the joints whose hardware torque runs 2-3x sim; hip_roll / hip_yaw
     # share the same M6C12 actuator model and match. Scale only the sagittal pair so the eval can
     # tell a sagittal-specific plant error from an actuator-wide one.
@@ -134,6 +204,13 @@ def main():
         env_cfg.events.base_external_force_torque = None
         overrides["base_force_x"] = args_cli.base_force_x or 0.0
         overrides["base_force_z"] = args_cli.base_force_z or 0.0
+    if args_cli.sag_effort_scale is not None:
+        k = float(args_cli.sag_effort_scale)
+        eff = legs.effort_limit
+        if not isinstance(eff, dict):
+            raise RuntimeError("expected per-joint effort_limit dict on the legs group")
+        legs.effort_limit = {j: (v * k if ("hip_pitch" in j or "knee_pitch" in j) else v) for j, v in eff.items()}
+        overrides["sag_effort_scale"] = k
     if overrides:
         print(f"[eval] PLANT OVERRIDES (eval only): {overrides}")
 
@@ -211,6 +288,7 @@ def main():
     # an rms hides exactly the excursions that matter.
     tilt_hist = []                                  # |omega_xy| per measured step (rad/s)
     yaw_hist = []                                   # |omega_z| per measured step (rad/s)
+    height_hist, pitch_hist = [], []                # base height (m) and torso pitch (rad) per step
     jvel_hist = []                                  # |joint_vel| per measured step (rad/s)
 
     _hand = None
@@ -261,6 +339,9 @@ def main():
                 tau_hist.append(tau_abs.cpu())
                 tilt_hist.append(rock.norm(dim=1).cpu())   # |omega_xy| per env
                 yaw_hist.append(data.root_ang_vel_b.torch[:, 2].abs().cpu())
+                height_hist.append(data.root_pos_w.torch[:, 2].cpu())
+                # forward pitch from the base-frame gravity vector: +ve = nose down, as the IMU reports
+                pitch_hist.append(torch.asin(torch.clamp(-data.projected_gravity_b.torch[:, 0], -1, 1)).cpu())
                 jvel_hist.append(jvel.abs().cpu())
                 n_steps += 1
                 if _KNEE_TRAJ is not None:
@@ -355,6 +436,17 @@ def main():
         metrics["knee_corr_median"] = float(_np.median(cors)) if cors else 0.0
         metrics["knee_swing_median"] = float(_np.median(_np.ptp(tr, axis=0)))
         metrics["envs_stepping_pct"] = 100.0 * len(hzs) / tr.shape[1]
+    try:
+        _stall_lim = tau_limit
+        if "sag_effort_scale" in overrides:
+            _stall_lim = tau_limit.clone()
+            for _j, _n in enumerate(robot.data.joint_names):
+                if "hip_pitch" in _n or "knee_pitch" in _n:
+                    _stall_lim[:, _j] = tau_limit[:, _j] / overrides["sag_effort_scale"]
+        metrics.update(_stall_and_posture(tau_hist, jvel_hist, _stall_lim, height_hist, pitch_hist,
+                                          robot.data.joint_names, dt))
+    except Exception as exc:  # a metric bug must never cost a pipeline its eval
+        metrics["stall_metrics_error"] = repr(exc)
     if _FOOT_Z:
         # Swing-foot clearance, defined IDENTICALLY to humanoid-control ROBOT_PC_BRIEF item C so the
         # hardware FK number and this one are directly comparable: d = z_left - z_right at the
