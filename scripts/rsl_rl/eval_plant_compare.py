@@ -39,6 +39,22 @@ parser.add_argument("--cmd_vx", type=float, default=0.3, help="fixed forward com
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--task", type=str, default=None, help="gym task id (usually set via --variant).")
 parser.add_argument("--out", type=str, default=None, help="write metrics JSON here.")
+# Plant-identification overrides. Replaying a FROZEN network on a perturbed plant asks: which plant
+# change makes this policy behave in sim the way it behaves on the robot? Hardware runs the same
+# network, so a perturbation that reproduces the hardware signature is a candidate sim2real
+# mismatch. None of these change training; they apply to this eval only.
+parser.add_argument("--foot_friction", type=float, default=None,
+                    help="fix robot-body static+dynamic friction (terrain is 1.0, combine=multiply, "
+                         "so this IS the foot-ground coefficient). Default: training DR (0.4-1.2).")
+parser.add_argument("--sag_viscous_scale", type=float, default=None,
+                    help="scale stick-slip viscous friction on hip_pitch and knee_pitch only.")
+parser.add_argument("--base_force_x", type=float, default=None,
+                    help="constant BODY-frame x force on the base, N (negative = holding the robot back). "
+                         "Models the operator's supporting hand, which every hardware walk has and sim does not.")
+parser.add_argument("--base_force_z", type=float, default=None,
+                    help="constant BODY-frame z force on the base, N (positive = lifting / carrying weight).")
+parser.add_argument("--sag_armature_scale", type=float, default=None,
+                    help="scale armature (reflected inertia) on hip_pitch and knee_pitch only.")
 # --variant / --task and rsl-rl args (--load_run / --checkpoint) come from the shared helpers.
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -74,6 +90,8 @@ from humanoid_policy_assets.actuators.limits import joint_effort_limits  # noqa:
 # EVAL_GAIT=0 / "false" mean OFF; a bare truthiness check enabled them for any non-empty value.
 _KNEE_TRAJ = [] if os.environ.get("EVAL_GAIT", "").strip().lower() not in ("", "0", "false") else None
 _KNEE_IDX = None
+_FOOT_Z = [] if _KNEE_TRAJ is not None else None
+_FOOT_IDX = None
 
 
 def main():
@@ -88,6 +106,37 @@ def main():
     env_cfg.commands.base_velocity.rel_standing_envs = 0.0
     env_cfg.commands.base_velocity.heading_command = False
 
+    overrides = {}
+    if args_cli.foot_friction is not None:
+        f = float(args_cli.foot_friction)
+        p = env_cfg.events.physics_material.params
+        p["static_friction_range"] = (f, f)
+        p["dynamic_friction_range"] = (f, f)
+        overrides["foot_friction"] = f
+    # hip_pitch / knee_pitch are the joints whose hardware torque runs 2-3x sim; hip_roll / hip_yaw
+    # share the same M6C12 actuator model and match. Scale only the sagittal pair so the eval can
+    # tell a sagittal-specific plant error from an actuator-wide one.
+    sag = ("leg_.*_hip_pitch_joint", "leg_.*_knee_pitch_joint")
+    rest = ("leg_.*_hip_roll_joint", "leg_.*_hip_yaw_joint")
+    legs = env_cfg.scene.robot.actuators["legs"]
+    for arg, field in (("sag_viscous_scale", "viscous"), ("sag_armature_scale", "armature")):
+        k = getattr(args_cli, arg)
+        if k is None:
+            continue
+        base = getattr(legs, field)
+        if isinstance(base, dict):
+            raise RuntimeError(f"{field} is already per-joint; override expects a group scalar")
+        setattr(legs, field, {**{j: base * k for j in sag}, **{j: base for j in rest}})
+        overrides[arg] = k
+    if args_cli.base_force_x is not None or args_cli.base_force_z is not None:
+        # The reset-time random push would wipe a permanent wrench on every reset; drop it so the
+        # hand force is the only external force in play. Re-applied every step below as well.
+        env_cfg.events.base_external_force_torque = None
+        overrides["base_force_x"] = args_cli.base_force_x or 0.0
+        overrides["base_force_z"] = args_cli.base_force_z or 0.0
+    if overrides:
+        print(f"[eval] PLANT OVERRIDES (eval only): {overrides}")
+
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     resume_path = get_checkpoint_path(
@@ -97,6 +146,12 @@ def main():
     print(f"[eval] plant={args_cli.plant}  checkpoint={resume_path}")
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    if overrides:  # prove the override reached the simulated actuators, not just the cfg
+        _r = env.unwrapped.scene["robot"]
+        _a = _r.actuators["legs"]
+        _names = [_r.data.joint_names[i] for i in (_a.joint_indices.tolist() if hasattr(_a.joint_indices, "tolist") else range(len(_r.data.joint_names)))]
+        print("[eval] legs viscous :", {n: round(float(v), 4) for n, v in zip(_names, _a.viscous[0])})
+        print("[eval] legs armature:", {n: round(float(v), 4) for n, v in zip(_names, _a.armature[0])})
     env = RslRlVecEnvWrapper(env)
 
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, _pkg_version("rsl-rl-lib"))
@@ -112,9 +167,12 @@ def main():
 
     uenv = env.unwrapped
     robot = uenv.scene["robot"]
-    global _KNEE_IDX
+    global _KNEE_IDX, _FOOT_IDX
     _names = robot.data.joint_names
     _KNEE_IDX = [_names.index("leg_left_knee_pitch_joint"), _names.index("leg_right_knee_pitch_joint")]
+    _bn = robot.data.body_names
+    _FOOT_IDX = [next(i for i, b in enumerate(_bn) if side in b and b.endswith("ankle_roll"))
+                 for side in ("left", "right")]
     dt = float(uenv.step_dt)  # policy step (s)
     dev = uenv.device
     N = uenv.num_envs
@@ -152,8 +210,24 @@ def main():
     # Buffered rather than accumulated because both targets are tail statistics, not means, and
     # an rms hides exactly the excursions that matter.
     tilt_hist = []                                  # |omega_xy| per measured step (rad/s)
+    yaw_hist = []                                   # |omega_z| per measured step (rad/s)
     jvel_hist = []                                  # |joint_vel| per measured step (rad/s)
 
+    _hand = None
+    if "base_force_x" in overrides:
+        _base_id = [robot.data.body_names.index("base")]
+        _f = torch.zeros((N, 1, 3), device=dev)
+        _f[:, 0, 0] = overrides["base_force_x"]
+        _f[:, 0, 2] = overrides["base_force_z"]
+        _hand = (_f, torch.zeros_like(_f), _base_id)
+
+    def _apply_hand():
+        if _hand is not None:
+            robot.permanent_wrench_composer.reset()
+            robot.permanent_wrench_composer.add_forces_and_torques(
+                _hand[0], _hand[1], body_ids=_hand[2], is_global=False)
+
+    _apply_hand()
     obs = env.get_observations()
     total = args_cli.warmup + args_cli.steps
     with torch.inference_mode():
@@ -161,6 +235,7 @@ def main():
         for i in range(total):
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
+            _apply_hand()
             measuring = i >= args_cli.warmup
             if measuring:
                 data = robot.data
@@ -185,10 +260,12 @@ def main():
                 tau_peak = torch.maximum(tau_peak, tau_abs.amax(dim=0))
                 tau_hist.append(tau_abs.cpu())
                 tilt_hist.append(rock.norm(dim=1).cpu())   # |omega_xy| per env
+                yaw_hist.append(data.root_ang_vel_b.torch[:, 2].abs().cpu())
                 jvel_hist.append(jvel.abs().cpu())
                 n_steps += 1
                 if _KNEE_TRAJ is not None:
                     _KNEE_TRAJ.append(robot.data.joint_pos.torch[:, _KNEE_IDX].clone().cpu())
+                    _FOOT_Z.append(robot.data.body_pos_w.torch[:, _FOOT_IDX, 2].clone().cpu())
             prev_action = actions
 
     denom = max(n_steps * N, 1)
@@ -197,6 +274,7 @@ def main():
     env_seconds = n_steps * N * dt
     metrics = {
         "plant": args_cli.plant,
+        "plant_overrides": overrides,
         "checkpoint": os.path.basename(resume_path),
         "num_envs": N,
         "measured_steps": n_steps,
@@ -241,6 +319,13 @@ def main():
         tilt = torch.cat(tilt_hist) * 180.0 / 3.141592653589793   # rad/s -> deg/s
         metrics["tilt_rate_p95_deg_s"] = float(torch.quantile(tilt, 0.95).item())
         metrics["tilt_rate_max_deg_s"] = float(tilt.max().item())
+    if yaw_hist:
+        # Body-frame yaw rate, comparable to the IMU gyro-z the heading report measured while
+        # walking: |omega_z| p95 ~1.4-2.5 rad/s on hardware (humanoid-control
+        # REPORT_2026-09-29_heading.md section 2) -- a 12-31 deg torso twist at the gait frequency.
+        yaw = torch.cat(yaw_hist)
+        metrics["yaw_rate_p95_rad_s"] = float(torch.quantile(yaw, 0.95).item())
+        metrics["yaw_rate_p50_rad_s"] = float(torch.quantile(yaw, 0.50).item())
     if jvel_hist:
         jv = torch.cat(jvel_hist)                                 # (steps*envs, J)
         flat = jv.flatten()
@@ -270,6 +355,26 @@ def main():
         metrics["knee_corr_median"] = float(_np.median(cors)) if cors else 0.0
         metrics["knee_swing_median"] = float(_np.median(_np.ptp(tr, axis=0)))
         metrics["envs_stepping_pct"] = 100.0 * len(hzs) / tr.shape[1]
+    if _FOOT_Z:
+        # Swing-foot clearance, defined IDENTICALLY to humanoid-control ROBOT_PC_BRIEF item C so the
+        # hardware FK number and this one are directly comparable: d = z_left - z_right at the
+        # *_ankle_roll link origins; a step is the span between sign changes of d; its clearance is
+        # max|d| over that span (swing foot's peak height above the stance foot); spans < 0.15 s
+        # are crossing jitter and are dropped. The 10th percentile is the scuffing signal.
+        import numpy as _np
+        fz = torch.stack(_FOOT_Z).numpy()             # (T, N, 2)
+        min_len = max(1, int(round(0.15 / dt)))
+        clr = []
+        for e in range(fz.shape[1]):
+            d = fz[:, e, 0] - fz[:, e, 1]
+            cross = _np.flatnonzero(_np.diff(_np.signbit(d)))  # index before each sign change
+            for a, b in zip(cross[:-1], cross[1:]):
+                if b - a >= min_len:
+                    clr.append(float(_np.abs(d[a + 1:b + 1]).max()))
+        if clr:
+            metrics["swing_clearance_median_m"] = float(_np.median(clr))
+            metrics["swing_clearance_p10_m"] = float(_np.percentile(clr, 10))
+            metrics["swing_clearance_steps"] = len(clr)
     print("[eval] RESULT " + json.dumps(metrics))
     if args_cli.out:
         os.makedirs(os.path.dirname(os.path.abspath(args_cli.out)), exist_ok=True)
