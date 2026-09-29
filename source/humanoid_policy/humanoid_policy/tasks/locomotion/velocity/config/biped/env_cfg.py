@@ -535,12 +535,29 @@ class EventsCfg:
     """Configuration for events."""
 
     # === Startup behaviors ===
+    # Floor friction floor 0.4 -> 0.25 (2026-09-29). The terrain is 1.0 with multiply combine, so
+    # this range IS the foot-ground coefficient the policy meets.
+    #
+    # Evidence (plant identification, humanoid-control ROBOT_PC_BRIEF_2026-09-29): replaying
+    # measC-full at the hardware walking command (vx 0.6) on perturbed plants, foot mu 0.3 is the
+    # ONLY change that reproduces the hardware torso twist -- body yaw rate p95 2.18 rad/s against
+    # 1.4-2.5 measured on the robot and 0.60 on the old plant. Sagittal damping x8, inertia x3 and a
+    # supporting-hand force do not. And the policy is weak there: 0.18 falls/min at mu 0.3 against
+    # 0.04 on the old range. It had simply never been trained on a floor that slippery.
+    #
+    # Also closes an observation gap: on hardware the policy sees |ang_vel_z| of 1.4-2.5 rad/s every
+    # step, a range the old plant almost never produced.
+    #
+    # Widened, not shifted: 0.25-1.2 contains the old 0.4-1.2, so this stays safe if the direct floor
+    # measurement (brief item D) comes back grippier than 0.3 -- the cost is robustness we didn't
+    # need, not a wrong plant. Floor friction is genuinely unknown across floors, which is exactly
+    # the kind of parameter domain randomisation is for.
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.4, 1.2),
-            "dynamic_friction_range": (0.4, 1.2),
+            "static_friction_range": (0.25, 1.2),
+            "dynamic_friction_range": (0.25, 1.2),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
