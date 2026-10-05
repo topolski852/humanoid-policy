@@ -437,24 +437,6 @@ _ANKLE_DELAY = (2, 3)
 _M6C12 = load_actuator_model("m6c12_pitch")    # legs: hip roll/yaw/pitch + knee
 _MAD5010 = load_actuator_model("mad5010_roll")  # ankles: ankle pitch/roll
 
-# Ankle STATIC friction, measured on the robot 2026-09-28 (humanoid-control
-# docs/measurements/REPORT_2026-09-28_M7.md, TRAINING_INPUT.json -> actuator.m7_static_stiffness).
-# With both legs hanging and all 12 joints held, ankle_pitch needed ~0.40 N·m beyond gravity to
-# hold on BOTH sides (left 0.41, right 0.43 median), present even near zero gravity load.
-#
-# The vendored bench fit has breakaway 0.249. With the +-30% friction DR that spans 0.174-0.324,
-# so the measured value sat OUTSIDE the randomisation envelope -- training never met it.
-#
-# Only BREAKAWAY is overridden. M7 is a static test: it measures the force to hold, which is the
-# stick regime. It says nothing about kinetic friction ("Friction while moving isn't [measured]"),
-# so COULOMB keeps the bench value 0.222 from constant-velocity ramps -- a different quantity,
-# measured by a different method. The pair gives a Stribeck hump from 0.40 relaxing to 0.222.
-# The DR scales both, so breakaway now spans 0.28-0.52, straddling the measurement.
-#
-# Hip/knee (M6C12) friction is NOT changed: sim coulomb 0.429 against M7's +-0.5 N·m stiction
-# scatter is consistent, and the 0.30-0.56 DR envelope already covers it.
-_ANKLE_BREAKAWAY_MEASURED = 0.40
-
 
 def _walk_actuators_implicit():
     """Original walk plant: PhysX implicit PD, no friction/latency, light armature."""
@@ -510,7 +492,7 @@ def _walk_actuators_modeled():
             damping=_subset(_CONTRACT_KD, _ANKLE_LEAVES),
             armature=float(_MAD5010["inertia"]),
             min_delay=_ANKLE_DELAY[0], max_delay=_ANKLE_DELAY[1],
-            coulomb=float(af["coulomb"]), breakaway=_ANKLE_BREAKAWAY_MEASURED,
+            coulomb=float(af["coulomb"]), breakaway=float(af["breakaway"]),
             viscous=float(af["viscous"]), stribeck_vel=float(af["stribeck_vel"]),
             stick_vel=float(af["stick_vel"]),
         ),
