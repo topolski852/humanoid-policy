@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
@@ -76,6 +76,59 @@ def joint_torque_saturation(
     tau = asset.data.computed_torque.torch[:, asset_cfg.joint_ids]
     limit = joint_effort_limits(asset)[:, asset_cfg.joint_ids]
     return torch.sum(torch.relu(tau.abs() - limit), dim=1)
+
+
+class feet_touchdown_speed(ManagerTermBase):
+    """Penalize foot speed at touchdown: ``||v_foot||^2`` (m^2/s^2) at each foot's first contact.
+
+    Hardware motivation (humanoid-control ``REPORT_2026-10-05_battery_walk.md``,
+    ``REPORT_2026-10-05_walk_measE.md``): ankle_pitch spikes of 24-29 rad/s at foot strike, one
+    past the +-45 deg limit, and 13.2 N·m of impact back-drive on an ankle capped at 7. That is
+    above the ~13 rad/s where the ESC encoders fault. Sim never exceeds ~14.
+
+    Why foot SPEED and not tilt or ankle velocity: replaying measC-full at the hardware command
+    (vx 0.6) with physics-rate touchdown records (``eval_plant_compare.py --touchdown``, 9,823
+    strikes), the foot lands still moving 1.9 m/s horizontally (p95 2.5) against a 0.6 m/s body.
+    It plants mid-swing instead of decelerating first. Horizontal touchdown speed is the strongest
+    predictor of the ankle peak that follows (Spearman 0.66 rigid, 0.54 on a compliant rug
+    model). Vertical speed and foot rotation rate are weaker (~0.4), and foot tilt does not
+    predict it (-0.15). On a carpet, a foot arriving at ~2 m/s catches the pile and stops dead.
+    Penalizing ankle velocity directly would treat the symptom and leave the strike in place;
+    ``dof_vel_excess`` already hinges every joint at 8 rad/s.
+
+    The speed used is the foot's velocity at the PREVIOUS policy step (40 ms earlier, still in the
+    air): by the step that reports first contact, the impact has already stopped the foot. That
+    also prices the approach, so the policy learns to slow the foot before it lands.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        sensor_cfg: SceneEntityCfg = cfg.params["sensor_cfg"]
+        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+        sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        asset = env.scene[asset_cfg.name]
+        s_names = [sensor.body_names[i] for i in sensor_cfg.body_ids]
+        a_names = [asset.body_names[i] for i in asset_cfg.body_ids]
+        if sorted(s_names) != sorted(a_names):
+            raise ValueError(f"feet_touchdown_speed: sensor bodies {s_names} != asset bodies {a_names}")
+        # the sensor and the articulation can enumerate bodies in different orders; pair by name
+        self._sensor_ids = [sensor_cfg.body_ids[s_names.index(n)] for n in a_names]
+        self._prev_vel = torch.zeros(env.num_envs, len(a_names), 3, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            self._prev_vel.zero_()
+        else:
+            self._prev_vel[env_ids] = 0.0
+
+    def __call__(self, env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg,
+                 asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+        sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+        first = sensor.compute_first_contact(env.step_dt).torch[:, self._sensor_ids].float()
+        vel = env.scene[asset_cfg.name].data.body_lin_vel_w.torch[:, asset_cfg.body_ids, :]
+        penalty = torch.sum(first * self._prev_vel.square().sum(dim=-1), dim=1)
+        self._prev_vel = vel.clone()
+        return penalty
 
 
 def base_lin_accel_xy_l2(

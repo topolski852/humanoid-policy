@@ -452,6 +452,25 @@ class RewardsCfg:
         },
         weight=-0.07207,
     )
+    # SOFT LANDING (2026-10-05). Hardware ankle_pitch spikes 24-29 rad/s at foot strike (past the
+    # ~13 rad/s encoder-fault speed; 13.2 N·m back-drive against a 7 N·m cap). In sim measC-full
+    # lands its foot still moving 1.9 m/s horizontally (p95 2.5) at a 0.6 m/s body speed, and that
+    # speed is the best predictor of the ankle peak (see mdp.feet_touchdown_speed).
+    #
+    # Weight: a smoke run resumed from measC-full logged the term at -0.005/episode with weight -0.2,
+    # the size of feet_slide -- too faint to move a fine-tune. -0.5 gives ~2% of track_lin_vel and
+    # ~55% of feet_air_time. Kept below feet_air_time on purpose: the cheap way to land slowly is
+    # to shuffle (the measB lesson), so check knee swing and forward speed, not only the strike.
+    # HUMANOID_TOUCHDOWN_W overrides it for A/B; 0 disables. Tune against td_landing_vxy /
+    # td_post_ankle_peak from eval_plant_compare.py --touchdown.
+    feet_touchdown_speed = RewTerm(
+        func=mdp.feet_touchdown_speed,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll"),
+        },
+        weight=float(os.environ.get("HUMANOID_TOUCHDOWN_W", "-0.5")),
+    )
 
     # penalize undesired contacts (falls, and -- with self-collision enabled -- leg-vs-leg contact)
     undesired_contacts = RewTerm(

@@ -67,6 +67,11 @@ parser.add_argument("--base_force_z", type=float, default=None,
                     help="constant BODY-frame z force on the base, N (positive = lifting / carrying weight).")
 parser.add_argument("--sag_armature_scale", type=float, default=None,
                     help="scale armature (reflected inertia) on hip_pitch and knee_pitch only.")
+parser.add_argument("--touchdown", action="store_true",
+                    help="record feet + ankles at the PHYSICS rate and report foot-strike metrics: landing "
+                         "speed, foot tilt and rotation rate just before contact, and the ankle_pitch velocity "
+                         "peak that follows. The hardware ankle spikes (24-29 rad/s) are impact transients a "
+                         "few ms long, which the 40 ms policy-rate sample can miss.")
 # --variant / --task and rsl-rl args (--load_run / --checkpoint) come from the shared helpers.
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -151,6 +156,72 @@ def _stall_and_posture(tau_hist, jvel_hist, tau_limit, height_hist, pitch_hist, 
         p = torch.stack(pitch_hist) * 180.0 / 3.141592653589793
         out["torso_pitch_mean_deg"] = float(p.mean().item())
         out["torso_pitch_p95_deg"] = float(torch.quantile(p.flatten(), 0.95).item())
+    return out
+
+
+def _touchdown_metrics(rec, dt_phys, warm_substeps):
+    """Foot-strike statistics from physics-rate records (see --touchdown).
+
+    A touchdown is a foot whose contact force rises past 5 N after >= 20 ms below 1 N. For each one:
+      pre-impact (the last substep before contact): foot vertical speed, horizontal speed, |angular
+      velocity|, and tilt -- the angle between the foot's gravity vector and its median STANCE
+      gravity vector, so it is independent of the link-frame convention.
+      post-impact (the 100 ms after): peak |ankle_pitch velocity| on that leg, and peak contact force.
+    Spearman correlations of the ankle peak against each pre-impact variable show which one an
+    impact penalty should target.
+    """
+    import numpy as _np
+    F = torch.stack(rec["force"]).numpy()[warm_substeps:]          # (S, N, 2)  |contact force|
+    vz = torch.stack(rec["vz"]).numpy()[warm_substeps:]            # (S, N, 2)  foot vertical speed
+    vxy = torch.stack(rec["vxy"]).numpy()[warm_substeps:]          # (S, N, 2)
+    w = torch.stack(rec["w"]).numpy()[warm_substeps:]              # (S, N, 2)  |foot ang vel|
+    g = torch.stack(rec["g"]).numpy()[warm_substeps:]              # (S, N, 2, 3) gravity in foot frame
+    av = torch.stack(rec["ank"]).numpy()[warm_substeps:]           # (S, N, 2)  |ankle_pitch vel|
+    S, N, _ = F.shape
+    air_need = max(1, int(round(0.020 / dt_phys)))
+    win = max(1, int(round(0.100 / dt_phys)))
+    # stance reference orientation per foot: median gravity vector while loaded and still
+    still = (F > 20.0) & (w < 0.5)
+    ref = []
+    for s in range(2):
+        gs = g[:, :, s][still[:, :, s]]
+        r = _np.median(gs, axis=0) if len(gs) else _np.array([0.0, 0.0, -1.0])
+        ref.append(r / (_np.linalg.norm(r) + 1e-9))
+    rows = []                                                      # (vz, vxy, w, tilt_deg, ank_peak, f_peak)
+    for e in range(N):
+        for s in range(2):
+            f = F[:, e, s]
+            on = f > 5.0
+            off = f < 1.0
+            for k in _np.flatnonzero(on[1:] & ~on[:-1]) + 1:
+                if k < air_need or k + win > S or not off[k - air_need:k].all():
+                    continue
+                gp = g[k - 1, e, s] / (_np.linalg.norm(g[k - 1, e, s]) + 1e-9)
+                tilt = float(_np.degrees(_np.arccos(_np.clip(gp @ ref[s], -1.0, 1.0))))
+                rows.append((-vz[k - 1, e, s], vxy[k - 1, e, s], w[k - 1, e, s], tilt,
+                             av[k:k + win, e, s].max(), f[k:k + win].max()))
+    out = {"touchdown_events": len(rows)}
+    a = _np.abs(av).reshape(-1)
+    out["ankle_pitch_vel_physics_p99_rad_s"] = float(_np.percentile(a, 99))
+    out["ankle_pitch_vel_physics_max_rad_s"] = float(a.max())
+    if not rows:
+        return out
+    R = _np.array(rows)
+    names = ["landing_vz_m_s", "landing_vxy_m_s", "landing_foot_angvel_rad_s", "landing_tilt_deg",
+             "post_ankle_peak_rad_s", "post_force_peak_n"]
+    for i, n in enumerate(names):
+        out[f"td_{n}_p50"] = float(_np.median(R[:, i]))
+        out[f"td_{n}_p95"] = float(_np.percentile(R[:, i], 95))
+
+    def _rank(x):
+        o = _np.argsort(x)
+        r = _np.empty(len(x))
+        r[o] = _np.arange(len(x))
+        return r
+    ry = _rank(R[:, 4])
+    out["td_spearman_vs_ankle_peak"] = {
+        n: float(_np.corrcoef(_rank(R[:, i]), ry)[0, 1]) for i, n in enumerate(names) if i != 4}
+    out["td_frac_ankle_peak_over_13"] = float((R[:, 4] > 13.0).mean())
     return out
 
 
@@ -305,12 +376,44 @@ def main():
             robot.permanent_wrench_composer.add_forces_and_torques(
                 _hand[0], _hand[1], body_ids=_hand[2], is_global=False)
 
+    _td = None
+    if args_cli.touchdown:
+        # Wrap scene.update, which env.step calls once per PHYSICS substep (PhysX decimation runs
+        # in Python), so feet and ankles are sampled every 5 ms rather than every 40 ms.
+        from isaaclab.utils.math import quat_apply_inverse
+        _cs = uenv.scene.sensors["contact_forces"]
+        _cs_feet = [next(i for i, b in enumerate(_cs.body_names) if side in b and b.endswith("ankle_roll"))
+                    for side in ("left", "right")]
+        _ank_idx = [robot.data.joint_names.index(f"leg_{s}_ankle_pitch_joint") for s in ("left", "right")]
+        _gdown = torch.tensor([0.0, 0.0, -1.0], device=dev).repeat(N * 2, 1)
+        _td = {"on": False, "calls": 0, "force": [], "vz": [], "vxy": [], "w": [], "g": [], "ank": []}
+        _orig_update = uenv.scene.update
+
+        def _rec_update(dt):
+            _orig_update(dt)
+            if not _td["on"]:
+                return
+            d = robot.data
+            lv = d.body_lin_vel_w.torch[:, _FOOT_IDX, :]
+            q = d.body_quat_w.torch[:, _FOOT_IDX, :].reshape(-1, 4)
+            _td["force"].append(_cs.data.net_forces_w.torch[:, _cs_feet, :].norm(dim=-1).cpu())
+            _td["vz"].append(lv[..., 2].cpu())
+            _td["vxy"].append(lv[..., :2].norm(dim=-1).cpu())
+            _td["w"].append(d.body_ang_vel_w.torch[:, _FOOT_IDX, :].norm(dim=-1).cpu())
+            _td["g"].append(quat_apply_inverse(q, _gdown).reshape(N, 2, 3).cpu())
+            _td["ank"].append(d.joint_vel.torch[:, _ank_idx].abs().cpu())
+            _td["calls"] += 1
+
+        uenv.scene.update = _rec_update
+
     _apply_hand()
     obs = env.get_observations()
     total = args_cli.warmup + args_cli.steps
     with torch.inference_mode():
         policy(obs)  # warm up torch.compile / lazy init
         for i in range(total):
+            if _td is not None and i == args_cli.warmup:
+                _td["on"] = True
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
             _apply_hand()
@@ -467,6 +570,12 @@ def main():
             metrics["swing_clearance_median_m"] = float(_np.median(clr))
             metrics["swing_clearance_p10_m"] = float(_np.percentile(clr, 10))
             metrics["swing_clearance_steps"] = len(clr)
+    if _td is not None:
+        metrics["touchdown_substeps_recorded"] = _td["calls"]   # expect steps * decimation
+        try:
+            metrics.update(_touchdown_metrics(_td, float(uenv.physics_dt), 0))
+        except Exception as exc:  # a metric bug must never cost a pipeline its eval
+            metrics["touchdown_metrics_error"] = repr(exc)
     print("[eval] RESULT " + json.dumps(metrics))
     if args_cli.out:
         os.makedirs(os.path.dirname(os.path.abspath(args_cli.out)), exist_ok=True)
