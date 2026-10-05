@@ -90,9 +90,11 @@ class feet_touchdown_speed(ManagerTermBase):
     (vx 0.6) with physics-rate touchdown records (``eval_plant_compare.py --touchdown``, 9,823
     strikes), the foot lands still moving 1.9 m/s horizontally (p95 2.5) against a 0.6 m/s body.
     It plants mid-swing instead of decelerating first. Horizontal touchdown speed is the strongest
-    predictor of the ankle peak that follows (Spearman 0.66 rigid, 0.54 on a compliant rug
-    model). Vertical speed and foot rotation rate are weaker (~0.4), and foot tilt does not
-    predict it (-0.15). On a carpet, a foot arriving at ~2 m/s catches the pile and stops dead.
+    predictor of the ankle peak that follows (Spearman 0.66). Vertical speed and foot rotation
+    rate are weaker (~0.4), and foot tilt does not predict it (-0.15). The robot walks on an old
+    carpet over concrete: hard, with no real damping, but grippier than bare concrete (tilt-test
+    mu_s 0.58). So a foot arriving at ~2 m/s is stopped dead by friction, and the ankle takes
+    the impact.
     Penalizing ankle velocity directly would treat the symptom and leave the strike in place;
     ``dof_vel_excess`` already hinges every joint at 8 rad/s.
 
